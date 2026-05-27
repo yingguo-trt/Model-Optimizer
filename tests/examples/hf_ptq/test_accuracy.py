@@ -68,22 +68,25 @@ CASES: list[AccuracyCase] = [
         mini_sm=89,
         tasks=(
             "nemo_skills.ns_mmlu_pro",
-            "nemo_skills.ns_gpqa",
+            # TODO: add "nemo_skills.ns_gpqa" once the CI HuggingFace token has
+            #       been granted access to Idavidrein/gpqa (a gated dataset).
         ),
     ),
-    AccuracyCase(
-        quantized_model="nvidia/Phi-4-reasoning-plus-FP8",
-        baseline_model="microsoft/Phi-4-reasoning-plus",
-        backend="vllm",
-        tensor_parallel_size=1,
-        mini_sm=89,
-        tasks=(
-            "nemo_skills.ns_gpqa",
-            "nemo_skills.ns_aime2025",
-        ),
-        reasoning=True,
-        max_new_tokens=64000,
-    ),
+    # TODO: re-enable once the CI HuggingFace token has been granted gated-dataset
+    # access for Idavidrein/gpqa and the AIME 2025 dataset.
+    # AccuracyCase(
+    #     quantized_model="nvidia/Phi-4-reasoning-plus-FP8",
+    #     baseline_model="microsoft/Phi-4-reasoning-plus",
+    #     backend="vllm",
+    #     tensor_parallel_size=1,
+    #     mini_sm=89,
+    #     tasks=(
+    #         "nemo_skills.ns_gpqa",
+    #         "nemo_skills.ns_aime2025",
+    #     ),
+    #     reasoning=True,
+    #     max_new_tokens=64000,
+    # ),
 ]
 
 
