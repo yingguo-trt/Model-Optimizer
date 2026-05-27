@@ -27,7 +27,8 @@ the baseline on any task; otherwise the test fails.
 local filesystem paths — the underlying inference backends and nv-eval
 treat them identically.
 
-Requires ``NV_EVAL_DIR`` to point at ``Model-Optimizer-Internal/examples/nv_eval``.
+Requires ``NV_EVAL_DIR`` to point at a directory containing ``launch_eval.py``
+(the nv-eval launcher entry point).
 """
 
 import os
@@ -49,6 +50,8 @@ class AccuracyCase:
     mini_sm: int
     tasks: tuple[str, ...]
     max_drop_from_baseline: float = 0.05
+    reasoning: bool = False
+    max_new_tokens: int = 16384
 
     @property
     def test_id(self) -> str:
@@ -63,7 +66,23 @@ CASES: list[AccuracyCase] = [
         backend="vllm",
         tensor_parallel_size=1,
         mini_sm=89,
-        tasks=("nemo_skills.ns_mmlu_pro",),
+        tasks=(
+            "nemo_skills.ns_mmlu_pro",
+            "nemo_skills.ns_gpqa",
+        ),
+    ),
+    AccuracyCase(
+        quantized_model="nvidia/Phi-4-reasoning-plus-FP8",
+        baseline_model="microsoft/Phi-4-reasoning-plus",
+        backend="vllm",
+        tensor_parallel_size=1,
+        mini_sm=89,
+        tasks=(
+            "nemo_skills.ns_gpqa",
+            "nemo_skills.ns_aime2025",
+        ),
+        reasoning=True,
+        max_new_tokens=64000,
     ),
 ]
 
@@ -98,12 +117,16 @@ def test_accuracy(case: AccuracyCase, record_property):
         backend=case.backend,
         tasks=list(case.tasks),
         tensor_parallel_size=case.tensor_parallel_size,
+        reasoning=case.reasoning,
+        max_new_tokens=case.max_new_tokens,
     )
     quantized_scores = nv_eval_runner.run(
         case.quantized_model,
         backend=case.backend,
         tasks=list(case.tasks),
         tensor_parallel_size=case.tensor_parallel_size,
+        reasoning=case.reasoning,
+        max_new_tokens=case.max_new_tokens,
     )
 
     failures: list[str] = []

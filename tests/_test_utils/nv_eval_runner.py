@@ -12,14 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Wrapper around the internal nv-eval framework for accuracy regression tests.
+"""Wrapper around the nv-eval launcher for accuracy regression tests.
 
-Shells out to ``launch_eval.py`` from
-``Model-Optimizer-Internal/examples/nv_eval`` and parses ``results.yml`` to
-extract numeric benchmark scores.
+Shells out to ``launch_eval.py`` (resolved from the ``NV_EVAL_DIR`` env var)
+and parses ``results.yml`` to extract numeric benchmark scores.
 
-The nv-eval directory is resolved from the ``NV_EVAL_DIR`` environment
-variable; tests that depend on this wrapper skip if it isn't set.
+Tests that depend on this wrapper skip if ``NV_EVAL_DIR`` is unset or the
+directory does not contain a ``launch_eval.py`` following the nv-eval CLI
+contract.
 """
 
 import os
@@ -31,12 +31,14 @@ from pathlib import Path
 
 import pytest
 
-# Mirrors the relevant rows of Model-Optimizer-Internal/examples/nv_eval/benchmarks.py.
+# Maps each task to the path inside results.yml where its score lives:
+#   results.groups.<group_key>.metrics.<metric_key>.scores.<score_key>.value
 # Key   = task name as passed to launch_eval.py --task-list (also the result subdir name).
-# Value = (group_key, metric_key, score_key) — path inside results.yml under results.groups.
+# Value = (group_key, metric_key, score_key).
 TASK_INFO: dict[str, tuple[str, str, str]] = {
     "nemo_skills.ns_mmlu_pro": ("mmlu-pro", "pass@1", "symbolic_correct"),
     "nemo_skills.ns_gpqa": ("gpqa", "pass@1[avg-of-8]", "symbolic_correct"),
+    "nemo_skills.ns_aime2025": ("aime25", "pass@1[avg-of-64]", "symbolic_correct"),
     "ns_scicode": ("scicode", "pass@1[avg-of-8]", "subtask_accuracy"),
     "ns_ifbench": ("ifbench", "pass@1[avg-of-8]", "prompt_loose_accuracy"),
     "ns_aa_lcr": ("aalcr", "pass@1", "judge_correct"),
@@ -62,9 +64,14 @@ def run(
     tensor_parallel_size: int,
     max_new_tokens: int = 16384,
     parallelism: int = 64,
+    reasoning: bool = False,
     extra_args: list[str] | None = None,
 ) -> dict[str, float]:
     """Evaluate ``model_path`` on ``tasks`` and return ``{task: score}``.
+
+    ``reasoning=True`` enables the launcher's reasoning mode (thinking tokens
+    enabled, longer generation budgets recommended). Pass a larger
+    ``max_new_tokens`` (e.g. 64000) when enabling reasoning.
 
     Skips the calling test if ``NV_EVAL_DIR`` is missing or any task is unknown.
     """
@@ -90,6 +97,8 @@ def run(
         "--parallelism",
         str(parallelism),
     ]
+    if reasoning:
+        cmd.append("--reasoning")
     if extra_args:
         cmd.extend(extra_args)
 
