@@ -60,9 +60,18 @@ class AccuracyCase:
 
 
 CASES: list[AccuracyCase] = [
+    # Qwen pair is used as the initial pipeline-validation case because both
+    # baseline and quantized checkpoints are accessible without accepting a
+    # gated-model license (Qwen/Qwen3-8B is Apache 2.0; nvidia/Qwen3-8B-FP8
+    # is NV-hosted). Per HF model card, nvidia/Qwen3-8B-FP8 is quantized
+    # from Qwen/Qwen3-8B (the finetuned chat variant), so that is the
+    # matching baseline for a fair accuracy comparison.
+    #
+    # TODO: re-add a Llama-3.1-8B case once the CI HuggingFace token has been
+    #       granted Meta license acceptance for meta-llama/Llama-3.1-8B-Instruct.
     AccuracyCase(
-        quantized_model="nvidia/Llama-3.1-8B-Instruct-FP8",
-        baseline_model="meta-llama/Llama-3.1-8B-Instruct",
+        quantized_model="nvidia/Qwen3-8B-FP8",
+        baseline_model="Qwen/Qwen3-8B",
         backend="vllm",
         tensor_parallel_size=1,
         mini_sm=89,
