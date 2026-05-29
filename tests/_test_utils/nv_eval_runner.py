@@ -45,6 +45,9 @@ TASK_INFO: dict[str, tuple[str, str, str]] = {
 }
 
 _INVOCATION_ID_RE = re.compile(r"to check status: nv-eval status (\S+)")
+# launch_eval.py launches the inference server with `docker run ... --name llm_server_<port>`
+# and echoes that command; we parse the name from stdout to tear the container down.
+_SERVER_NAME_RE = re.compile(r"--name (llm_server_\d+)")
 
 
 def _get_nv_eval_dir() -> Path:
@@ -114,11 +117,18 @@ def run(
         check=False,
     )
     print(proc.stdout, end="", flush=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"launch_eval.py exited with code {proc.returncode}")
+    try:
+        if proc.returncode != 0:
+            raise RuntimeError(f"launch_eval.py exited with code {proc.returncode}")
 
-    invocation_id = _extract_invocation_id(proc.stdout)
-    return _collect_scores(nv_eval_dir, invocation_id, tasks)
+        invocation_id = _extract_invocation_id(proc.stdout)
+        return _collect_scores(nv_eval_dir, invocation_id, tasks)
+    finally:
+        # launch_eval.py removes the server container on its failure paths but
+        # NOT on the success path, leaving it running and holding ~90% of GPU
+        # memory, which starves the next model's server. Tear down whatever this
+        # invocation started, regardless of pass/fail. See design review §9.1.
+        _teardown_servers(proc.stdout)
 
 
 def _extract_invocation_id(stdout: str) -> str:
@@ -126,6 +136,26 @@ def _extract_invocation_id(stdout: str) -> str:
     if not m:
         raise RuntimeError("could not find invocation_id in launch_eval.py stdout")
     return m.group(1)
+
+
+def _teardown_servers(launch_stdout: str) -> None:
+    """Force-remove the inference-server container(s) launch_eval.py started.
+
+    launch_eval.py only tears the server container down on its failure paths; on
+    the success path it leaves the container running, holding ~90% of GPU memory
+    and starving the next model's server. We parse the container name from the
+    launcher's own ``docker run --name`` line and force-remove it. Best-effort
+    and idempotent: removing an already-gone container is a harmless no-op.
+    """
+    for name in dict.fromkeys(_SERVER_NAME_RE.findall(launch_stdout)):
+        result = subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            print(f"[nv_eval_runner] tore down server container {name}")
 
 
 def _collect_scores(nv_eval_dir: Path, invocation_id: str, tasks: list[str]) -> dict[str, float]:
