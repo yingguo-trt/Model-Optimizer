@@ -186,5 +186,16 @@ def _collect_scores(nv_eval_dir: Path, invocation_id: str, tasks: list[str]) -> 
                 f"score path not found in {results_yml}: "
                 f"results.groups.{group_key}.metrics.{metric_key}.scores.{score_key}: {e}"
             ) from e
-        scores[task] = float(value)
+        value = float(value)
+        # nemo-skills reports accuracy on a 0-100 scale (e.g. MMLU-Pro 72.18),
+        # while other harnesses (lm-eval, simple-evals) report a 0-1 fraction.
+        # Normalize everything to a [0, 1] fraction so max_drop_from_baseline
+        # keeps a single meaning -- an absolute drop of 0.05 == 5 percentage
+        # points -- regardless of which harness produced the task's results.yml.
+        # All metrics consumed here (symbolic_correct, subtask_accuracy,
+        # prompt_loose_accuracy, judge_correct) are bounded accuracies, so a
+        # value above 1.0 can only be the 0-100 encoding.
+        if value > 1.0:
+            value /= 100.0
+        scores[task] = value
     return scores
