@@ -83,7 +83,7 @@ CASES: list[AccuracyCase] = [
             # TaskSpec("nemo_skills.ns_aime2025"),
         ),
         reasoning=True,
-        max_new_tokens=64000,
+        max_new_tokens=38912,  # fits Qwen3-8B native ctx 40960; 64000 exceeds max_model_len
         temperature=0.6,  # Qwen3 thinking-mode recommended sampling (avg-of-N tasks)
         top_p=0.95,
     ),
