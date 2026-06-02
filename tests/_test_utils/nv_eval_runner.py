@@ -12,15 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Wrapper around the nv-eval launcher for accuracy regression tests.
-
-Shells out to ``launch_eval.py`` (resolved from the ``NV_EVAL_DIR`` env var)
-and parses ``results.yml`` to extract numeric benchmark scores.
-
-Tests that depend on this wrapper skip if ``NV_EVAL_DIR`` is unset or the
-directory does not contain a ``launch_eval.py`` following the nv-eval CLI
-contract.
-"""
+"""Run nv-eval launcher and collect benchmark scores for accuracy tests."""
 
 import os
 import re
@@ -31,10 +23,7 @@ from pathlib import Path
 
 import pytest
 
-# Maps each task to the path inside results.yml where its score lives:
-#   results.groups.<group_key>.metrics.<metric_key>.scores.<score_key>.value
-# Key   = task name as passed to launch_eval.py --task-list (also the result subdir name).
-# Value = (group_key, metric_key, score_key).
+# task -> (group_key, metric_key, score_key) inside results.yml
 TASK_INFO: dict[str, tuple[str, str, str]] = {
     "nemo_skills.ns_mmlu_pro": ("mmlu-pro", "pass@1", "symbolic_correct"),
     "nemo_skills.ns_gpqa": ("gpqa", "pass@1[avg-of-8]", "symbolic_correct"),
@@ -45,18 +34,29 @@ TASK_INFO: dict[str, tuple[str, str, str]] = {
 }
 
 _INVOCATION_ID_RE = re.compile(r"to check status: nv-eval status (\S+)")
-# launch_eval.py launches the inference server with `docker run ... --name llm_server_<port>`
-# and echoes that command; we parse the name from stdout to tear the container down.
 _SERVER_NAME_RE = re.compile(r"--name (llm_server_\d+)")
+
+
+def _is_ci() -> bool:
+    return any(
+        os.environ.get(name)
+        for name in ("CI", "JENKINS_URL", "BUILD_URL", "BUILD_NUMBER", "JOB_NAME")
+    )
+
+
+def _skip_or_fail(message: str) -> None:
+    if _is_ci():
+        pytest.fail(message)
+    pytest.skip(message)
 
 
 def _get_nv_eval_dir() -> Path:
     raw = os.environ.get("NV_EVAL_DIR")
     if not raw:
-        pytest.skip("NV_EVAL_DIR is not set; cannot run nv-eval accuracy tests")
+        _skip_or_fail("NV_EVAL_DIR is not set; cannot run nv-eval accuracy tests")
     path = Path(raw)
     if not (path / "launch_eval.py").exists():
-        pytest.skip(f"launch_eval.py not found under NV_EVAL_DIR={path}")
+        _skip_or_fail(f"launch_eval.py not found under NV_EVAL_DIR={path}")
     return path
 
 
@@ -68,19 +68,22 @@ def run(
     max_new_tokens: int = 16384,
     parallelism: int = 64,
     reasoning: bool = False,
+    max_num_tokens: int | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    kv_cache_free_gpu_memory_fraction: float | None = None,
+    cuda_visible_devices: str | None = None,
+    docker_image: str | None = None,
+    extra_llm_args: str | None = None,
     extra_args: list[str] | None = None,
 ) -> dict[str, float]:
     """Evaluate ``model_path`` on ``tasks`` and return ``{task: score}``.
 
-    ``reasoning=True`` enables the launcher's reasoning mode (thinking tokens
-    enabled, longer generation budgets recommended). Pass a larger
-    ``max_new_tokens`` (e.g. 64000) when enabling reasoning.
-
-    Skips the calling test if ``NV_EVAL_DIR`` is missing or any task is unknown.
+    Local setup gaps skip the test; CI setup gaps fail it.
     """
     for task in tasks:
         if task not in TASK_INFO:
-            pytest.skip(f"task {task!r} missing from nv_eval_runner.TASK_INFO")
+            _skip_or_fail(f"task {task!r} missing from nv_eval_runner.TASK_INFO")
 
     nv_eval_dir = _get_nv_eval_dir()
 
@@ -102,6 +105,25 @@ def run(
     ]
     if reasoning:
         cmd.append("--reasoning")
+    if max_num_tokens is not None:
+        cmd.extend(["--max-num-tokens", str(max_num_tokens)])
+    if temperature is not None:
+        cmd.extend(["--t", str(temperature)])
+    if top_p is not None:
+        cmd.extend(["--top-p", str(top_p)])
+    if kv_cache_free_gpu_memory_fraction is not None:
+        cmd.extend(
+            [
+                "--kv-cache-free-gpu-memory-fraction",
+                str(kv_cache_free_gpu_memory_fraction),
+            ]
+        )
+    if cuda_visible_devices is not None:
+        cmd.extend(["--cuda-visible-devices", cuda_visible_devices])
+    if docker_image is not None:
+        cmd.extend(["--docker-image", docker_image])
+    if extra_llm_args is not None:
+        cmd.extend(["--extra-llm-args", extra_llm_args])
     if extra_args:
         cmd.extend(extra_args)
 
@@ -124,10 +146,6 @@ def run(
         invocation_id = _extract_invocation_id(proc.stdout)
         return _collect_scores(nv_eval_dir, invocation_id, tasks)
     finally:
-        # launch_eval.py removes the server container on its failure paths but
-        # NOT on the success path, leaving it running and holding ~90% of GPU
-        # memory, which starves the next model's server. Tear down whatever this
-        # invocation started, regardless of pass/fail. See design review §9.1.
         _teardown_servers(proc.stdout)
 
 
@@ -139,14 +157,7 @@ def _extract_invocation_id(stdout: str) -> str:
 
 
 def _teardown_servers(launch_stdout: str) -> None:
-    """Force-remove the inference-server container(s) launch_eval.py started.
-
-    launch_eval.py only tears the server container down on its failure paths; on
-    the success path it leaves the container running, holding ~90% of GPU memory
-    and starving the next model's server. We parse the container name from the
-    launcher's own ``docker run --name`` line and force-remove it. Best-effort
-    and idempotent: removing an already-gone container is a harmless no-op.
-    """
+    """Best-effort cleanup for server containers started by launch_eval.py."""
     for name in dict.fromkeys(_SERVER_NAME_RE.findall(launch_stdout)):
         result = subprocess.run(
             ["docker", "rm", "-f", name],
@@ -156,6 +167,19 @@ def _teardown_servers(launch_stdout: str) -> None:
         )
         if result.returncode == 0:
             print(f"[nv_eval_runner] tore down server container {name}")
+
+
+def _dig(node, keys: list, results_yml: Path):
+    """Walk ``keys`` into ``node``; on a miss, report which key and what keys exist there."""
+    for i, key in enumerate(keys):
+        if not isinstance(node, dict) or key not in node:
+            where = ".".join(map(str, keys[:i])) or "<root>"
+            available = sorted(node.keys()) if isinstance(node, dict) else f"<{type(node).__name__}>"
+            raise RuntimeError(
+                f"{results_yml}: missing {key!r} under {where}; available there: {available}"
+            )
+        node = node[key]
+    return node
 
 
 def _collect_scores(nv_eval_dir: Path, invocation_id: str, tasks: list[str]) -> dict[str, float]:
@@ -177,24 +201,9 @@ def _collect_scores(nv_eval_dir: Path, invocation_id: str, tasks: list[str]) -> 
             raise RuntimeError(f"results.yml missing for task {task!r}: {results_yml}")
         with open(results_yml) as f:
             data = yaml.safe_load(f)
-        try:
-            value = data["results"]["groups"][group_key]["metrics"][metric_key]["scores"][
-                score_key
-            ]["value"]
-        except (KeyError, TypeError) as e:
-            raise RuntimeError(
-                f"score path not found in {results_yml}: "
-                f"results.groups.{group_key}.metrics.{metric_key}.scores.{score_key}: {e}"
-            ) from e
-        value = float(value)
-        # nemo-skills reports accuracy on a 0-100 scale (e.g. MMLU-Pro 72.18),
-        # while other harnesses (lm-eval, simple-evals) report a 0-1 fraction.
-        # Normalize everything to a [0, 1] fraction so max_drop_from_baseline
-        # keeps a single meaning -- an absolute drop of 0.05 == 5 percentage
-        # points -- regardless of which harness produced the task's results.yml.
-        # All metrics consumed here (symbolic_correct, subtask_accuracy,
-        # prompt_loose_accuracy, judge_correct) are bounded accuracies, so a
-        # value above 1.0 can only be the 0-100 encoding.
+        path = ["results", "groups", group_key, "metrics", metric_key, "scores", score_key, "value"]
+        value = float(_dig(data, path, results_yml))
+        # Compare all drops as fractions; nemo-skills emits percentages.
         if value > 1.0:
             value /= 100.0
         scores[task] = value
