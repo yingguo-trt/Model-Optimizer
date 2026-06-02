@@ -102,6 +102,7 @@ def run(
         str(max_new_tokens),
         "--parallelism",
         str(parallelism),
+        "--wait",  # block until the eval finishes; local executor is otherwise fire-and-forget
     ]
     if reasoning:
         cmd.append("--reasoning")
@@ -198,7 +199,13 @@ def _collect_scores(nv_eval_dir: Path, invocation_id: str, tasks: list[str]) -> 
         group_key, metric_key, score_key = TASK_INFO[task]
         results_yml = run_dir / task / "artifacts" / "results.yml"
         if not results_yml.exists():
-            raise RuntimeError(f"results.yml missing for task {task!r}: {results_yml}")
+            tree = "\n".join(
+                f"  {p.relative_to(run_dir)}" for p in sorted(run_dir.rglob("*")) if p.is_file()
+            )
+            raise RuntimeError(
+                f"results.yml missing for task {task!r}: {results_yml}\n"
+                f"files actually written under {run_dir}:\n{tree or '  (none — eval produced no output)'}"
+            )
         with open(results_yml) as f:
             data = yaml.safe_load(f)
         path = ["results", "groups", group_key, "metrics", metric_key, "scores", score_key, "value"]
