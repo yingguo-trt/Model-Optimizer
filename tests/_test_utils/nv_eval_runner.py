@@ -195,15 +195,23 @@ def _collect_scores(nv_eval_dir: Path, invocation_id: str, tasks: list[str]) -> 
     run_dir = run_dirs[0]
 
     scores: dict[str, float] = {}
-    for task in tasks:
+    for idx, task in enumerate(tasks):
         group_key, metric_key, score_key = TASK_INFO[task]
-        results_yml = run_dir / task / "artifacts" / "results.yml"
+        candidate_results = [
+            run_dir / f"{task}.{idx}" / "artifacts" / "results.yml",
+            run_dir / task / "artifacts" / "results.yml",
+        ]
+        results_yml = next(
+            (path for path in candidate_results if path.exists()), candidate_results[0]
+        )
         if not results_yml.exists():
+            checked = "\n".join(f"  {path}" for path in candidate_results)
             tree = "\n".join(
                 f"  {p.relative_to(run_dir)}" for p in sorted(run_dir.rglob("*")) if p.is_file()
             )
             raise RuntimeError(
                 f"results.yml missing for task {task!r}: {results_yml}\n"
+                f"checked paths:\n{checked}\n"
                 f"files actually written under {run_dir}:\n{tree or '  (none — eval produced no output)'}"
             )
         with open(results_yml) as f:
