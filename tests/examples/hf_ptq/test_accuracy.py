@@ -79,7 +79,7 @@ CASES: list[AccuracyCase] = [
             # mmlu_pro + gpqa smoke-tested already (logs saved); re-enable when needed.
             # TaskSpec("nemo_skills.ns_mmlu_pro"),
             # TaskSpec("nemo_skills.ns_gpqa"),
-            TaskSpec("nemo_skills.ns_aime25"),
+            TaskSpec("nemo_skills.aime25"),
         ),
         reasoning=True,
         max_new_tokens=32768,  # fits Qwen3-8B 40960 ctx with ~8K headroom for the gpqa prompt
