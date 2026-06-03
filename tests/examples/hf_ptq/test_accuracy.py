@@ -76,11 +76,10 @@ CASES: list[AccuracyCase] = [
         tensor_parallel_size=1,
         mini_sm=89,
         tasks=(
-            # mmlu_pro smoke-tested already (log saved); re-enable when needed.
+            # mmlu_pro + gpqa smoke-tested already (logs saved); re-enable when needed.
             # TaskSpec("nemo_skills.ns_mmlu_pro"),
-            TaskSpec("nemo_skills.ns_gpqa"),
-            # aime2025 deferred: avg-of-64 is slow; re-add after gpqa mapping is confirmed.
-            # TaskSpec("nemo_skills.ns_aime2025"),
+            # TaskSpec("nemo_skills.ns_gpqa"),
+            TaskSpec("nemo_skills.ns_aime25"),
         ),
         reasoning=True,
         max_new_tokens=32768,  # fits Qwen3-8B 40960 ctx with ~8K headroom for the gpqa prompt
