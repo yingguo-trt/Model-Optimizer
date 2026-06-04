@@ -66,6 +66,12 @@ class AccuracyCase:
     def task_names(self) -> list[str]:
         return [task.name for task in self.tasks]
 
+    @property
+    def mlflow_experiment(self) -> str:
+        # baseline + quant variants sharing this baseline land in one experiment, so a
+        # task's bf16-vs-quant and quant-vs-quant runs compare side by side.
+        return f"modelopt-ptq/{os.path.basename(self.baseline_model.rstrip('/'))}"
+
 
 CASES: list[AccuracyCase] = [
     # Ungated smoke gate while Llama/Phi coverage waits on HF access.
@@ -195,6 +201,7 @@ def test_accuracy(case: AccuracyCase, record_property):
                 top_p=case.top_p,
                 kv_cache_free_gpu_memory_fraction=case.kv_cache_free_gpu_memory_fraction,
                 cuda_visible_devices=devices,
+                mlflow_experiment_name=case.mlflow_experiment,
             )
         except Exception as exc:
             raise RuntimeError(f"{label} eval failed for {model_path}") from exc

@@ -75,6 +75,7 @@ def run(
     top_p: float | None = None,
     kv_cache_free_gpu_memory_fraction: float | None = None,
     cuda_visible_devices: str | None = None,
+    mlflow_experiment_name: str | None = None,
     docker_image: str | None = None,
     extra_llm_args: str | None = None,
     extra_args: list[str] | None = None,
@@ -123,6 +124,8 @@ def run(
         )
     if cuda_visible_devices is not None:
         cmd.extend(["--cuda-visible-devices", cuda_visible_devices])
+    if mlflow_experiment_name is not None:
+        cmd.extend(["--mlflow-experiment-name", mlflow_experiment_name])
     if docker_image is not None:
         cmd.extend(["--docker-image", docker_image])
     if extra_llm_args is not None:
