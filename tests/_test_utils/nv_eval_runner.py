@@ -31,6 +31,7 @@ TASK_INFO: dict[str, tuple[str, str, str]] = {
     "ns_scicode": ("scicode", "pass@1[avg-of-8]", "subtask_accuracy"),
     "nemo_skills.ifbench": ("ifbench", "pass@1[avg-of-8]", "prompt_loose_accuracy"),
     "nemo_skills.ifeval": ("ifeval", "pass@1[avg-of-8]", "prompt_loose_accuracy"),
+    "nemo_skills.gsm8k": ("gsm8k", "pass@1[avg-of-4]", "symbolic_correct"),
     "ns_aa_lcr": ("aalcr", "pass@1", "judge_correct"),
 }
 

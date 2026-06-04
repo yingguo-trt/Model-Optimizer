@@ -81,7 +81,8 @@ CASES: list[AccuracyCase] = [
             # TaskSpec("nemo_skills.ns_gpqa"),
             # TaskSpec("nemo_skills.aime25"),
             # TaskSpec("nemo_skills.ifbench"),
-            TaskSpec("nemo_skills.ifeval"),
+            # TaskSpec("nemo_skills.ifeval"),
+            TaskSpec("nemo_skills.gsm8k"),
         ),
         reasoning=True,
         max_new_tokens=32768,  # fits Qwen3-8B 40960 ctx with ~8K headroom for the gpqa prompt
