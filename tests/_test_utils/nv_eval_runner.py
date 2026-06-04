@@ -25,7 +25,7 @@ import pytest
 
 # task -> (group_key, metric_key, score_key) inside results.yml
 TASK_INFO: dict[str, tuple[str, str, str]] = {
-    "nemo_skills.ns_mmlu_pro": ("mmlu-pro", "pass@1", "symbolic_correct"),
+    "nemo_skills.mmlu-pro": ("mmlu-pro", "pass@1", "symbolic_correct"),
     "nemo_skills.ns_gpqa": ("gpqa", "pass@1[avg-of-8]", "symbolic_correct"),
     "nemo_skills.aime25": ("aime25", "pass@1[avg-of-8]", "symbolic_correct"),
     "ns_scicode": ("scicode", "pass@1[avg-of-8]", "subtask_accuracy"),

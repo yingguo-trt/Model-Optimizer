@@ -76,12 +76,12 @@ CASES: list[AccuracyCase] = [
         tensor_parallel_size=1,
         mini_sm=89,
         tasks=(
-            # probed one-at-a-time during bring-up (logs saved); re-enable as needed.
-            # TaskSpec("nemo_skills.ns_mmlu_pro"),
-            # TaskSpec("nemo_skills.ns_gpqa"),
+            # card-aligned set in one job: MMLU-Pro + GPQA + IFEval + GSM8K; aime25/ifbench parked.
+            TaskSpec("nemo_skills.mmlu-pro"),
+            TaskSpec("nemo_skills.ns_gpqa"),
             # TaskSpec("nemo_skills.aime25"),
             # TaskSpec("nemo_skills.ifbench"),
-            # TaskSpec("nemo_skills.ifeval"),
+            TaskSpec("nemo_skills.ifeval"),
             TaskSpec("nemo_skills.gsm8k"),
         ),
         reasoning=True,
