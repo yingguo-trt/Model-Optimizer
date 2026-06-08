@@ -55,6 +55,7 @@ class AccuracyCase:
     top_p: float = 1.0e-5
     kv_cache_free_gpu_memory_fraction: float = 0.9
     cuda_visible_devices: str | None = None
+    wait_timeout: int | None = None
 
     @property
     def test_id(self) -> str:
@@ -94,6 +95,7 @@ CASES: list[AccuracyCase] = [
         max_new_tokens=32768,  # fits Qwen3-8B 40960 ctx with ~8K headroom for the gpqa prompt
         temperature=0.6,  # Qwen3 thinking-mode recommended sampling (avg-of-N tasks)
         top_p=0.95,
+        wait_timeout=64800,  # 4 serial tasks per model overrun the launcher's default 6h --wait-timeout
     ),
     # TODO: re-enable once the CI HuggingFace token has been granted gated-dataset
     # access for Idavidrein/gpqa and the AIME 2025 dataset.
@@ -184,6 +186,7 @@ def test_accuracy(case: AccuracyCase, record_property):
     record_property(
         "case.kv_cache_free_gpu_memory_fraction", case.kv_cache_free_gpu_memory_fraction
     )
+    record_property("case.wait_timeout", case.wait_timeout)
     record_property("case.gpu_pool", ",".join(pool))
 
     def _run(label: str, model_path: str, devices: str | None) -> dict[str, float]:
@@ -202,6 +205,7 @@ def test_accuracy(case: AccuracyCase, record_property):
                 kv_cache_free_gpu_memory_fraction=case.kv_cache_free_gpu_memory_fraction,
                 cuda_visible_devices=devices,
                 mlflow_experiment_name=case.mlflow_experiment,
+                wait_timeout=case.wait_timeout,
             )
         except Exception as exc:
             raise RuntimeError(f"{label} eval failed for {model_path}") from exc

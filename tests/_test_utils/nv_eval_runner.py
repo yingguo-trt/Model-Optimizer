@@ -76,6 +76,7 @@ def run(
     kv_cache_free_gpu_memory_fraction: float | None = None,
     cuda_visible_devices: str | None = None,
     mlflow_experiment_name: str | None = None,
+    wait_timeout: int | None = None,
     docker_image: str | None = None,
     extra_llm_args: str | None = None,
     extra_args: list[str] | None = None,
@@ -107,6 +108,8 @@ def run(
         str(parallelism),
         "--wait",  # block until the eval finishes; local executor is otherwise fire-and-forget
     ]
+    if wait_timeout is not None:
+        cmd.extend(["--wait-timeout", str(wait_timeout)])
     if reasoning:
         cmd.append("--reasoning")
     if max_num_tokens is not None:
