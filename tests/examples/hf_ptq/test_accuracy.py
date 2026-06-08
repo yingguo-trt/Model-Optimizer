@@ -159,6 +159,9 @@ def _execution_split(case: AccuracyCase) -> tuple[list[str], tuple[str, str] | N
     return pool, split
 
 
+# Disable the conftest-injected 300s "examples" cap; the eval is bounded by
+# launch_eval --wait-timeout (case.wait_timeout) and the Jenkins job timeout.
+@pytest.mark.timeout(0)
 @pytest.mark.parametrize("case", CASES, ids=_idfn)
 def test_accuracy(case: AccuracyCase, record_property):
     _skip_if_unsupported(case)
