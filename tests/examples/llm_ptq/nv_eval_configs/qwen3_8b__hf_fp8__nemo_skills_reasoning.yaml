@@ -1,0 +1,45 @@
+case_id: qwen3_8b__hf_fp8__nemo_skills_reasoning
+suite: llm_ptq_accuracy
+model_name: Qwen3-8B
+baseline_model:
+  source: hf_repo
+  uri: Qwen/Qwen3-8B
+quantized_model:
+  source: hf_repo
+  uri: nvidia/Qwen3-8B-FP8
+qformat: fp8
+quant_recipe: published/fp8
+backend: vllm
+tensor_parallel_size: 1
+min_gpu_arch: AdaLovelace
+mode: auto
+serving:
+  max_new_tokens: 32768
+  max_num_tokens: 8192
+  temperature: 0.6
+  top_p: 0.95
+  reasoning: true
+  parallelism: 64
+  kv_cache_free_gpu_memory_fraction: 0.9
+  wait_timeout: 64800
+tasks:
+  - task_name: nemo_skills.mmlu-pro
+    metric_name: symbolic_correct
+    threshold:
+      type: max_drop_from_baseline
+      value: 0.05
+  - task_name: nemo_skills.ns_gpqa
+    metric_name: symbolic_correct
+    threshold:
+      type: max_drop_from_baseline
+      value: 0.05
+  - task_name: nemo_skills.ifeval
+    metric_name: prompt_loose_accuracy
+    threshold:
+      type: max_drop_from_baseline
+      value: 0.05
+  - task_name: nemo_skills.gsm8k
+    metric_name: symbolic_correct
+    threshold:
+      type: max_drop_from_baseline
+      value: 0.05
