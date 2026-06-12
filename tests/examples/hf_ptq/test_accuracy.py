@@ -22,6 +22,8 @@ from typing import Literal
 import pytest
 import torch
 from _test_utils import nv_eval_runner
+from _test_utils.nv_eval_result_parser import TASK_INFO
+from _test_utils.nv_eval_threshold import evaluate
 
 pytestmark = pytest.mark.release
 
@@ -30,12 +32,18 @@ ExecutionMode = Literal["auto", "parallel", "sequential"]
 
 @dataclass(frozen=True)
 class TaskSpec:
-    name: str
-    max_drop_from_baseline: float = 0.05
+    task_name: str
+    threshold_value: float = 0.05
+    threshold_type: str = "max_drop_from_baseline"
+
+    @property
+    def metric_name(self) -> str:
+        # leaf accuracy metric (results.yml score_key); shared with the harness via TASK_INFO
+        return TASK_INFO[self.task_name][2]
 
     @property
     def test_id(self) -> str:
-        return self.name.split(".")[-1].replace("-", "_")
+        return self.task_name.split(".")[-1].replace("-", "_")
 
 
 @dataclass(frozen=True)
@@ -65,7 +73,7 @@ class AccuracyCase:
 
     @property
     def task_names(self) -> list[str]:
-        return [task.name for task in self.tasks]
+        return [task.task_name for task in self.tasks]
 
     @property
     def mlflow_experiment(self) -> str:
@@ -215,7 +223,7 @@ def test_accuracy(case: AccuracyCase, record_property):
 
     def _record_baseline(scores: dict[str, float]) -> None:
         for task in case.tasks:
-            record_property(f"{task.name}.baseline", scores[task.name])
+            record_property(f"{task.task_name}.baseline", scores[task.task_name])
 
     if run_parallel:
         baseline_devices, quantized_devices = split
@@ -252,23 +260,26 @@ def test_accuracy(case: AccuracyCase, record_property):
         quantized_scores = _run("quantized", case.quantized_model, seq_devices)
 
     failures: list[str] = []
-    for task in case.tasks:
-        baseline = baseline_scores[task.name]
-        quantized = quantized_scores[task.name]
+    for row in evaluate(case, baseline_scores, quantized_scores):
+        task_name = row["task_name"]
+        baseline = row["baseline_value"]
+        quantized = row["metric_value"]
+        threshold = row["threshold_value"]
         drop = baseline - quantized
+        passed = row["metric_status"] == "passed"
 
-        record_property(f"{task.name}.quantized", quantized)
-        record_property(f"{task.name}.drop", drop)
-        record_property(f"{task.name}.threshold", task.max_drop_from_baseline)
+        record_property(f"{task_name}.quantized", quantized)
+        record_property(f"{task_name}.drop", drop)
+        record_property(f"{task_name}.threshold", threshold)
 
-        status = "PASS" if drop <= task.max_drop_from_baseline else "FAIL"
+        status = "PASS" if passed else "FAIL"
         print(
-            f"[test_accuracy] {task.name}: baseline={baseline:.4f} quantized={quantized:.4f} "
-            f"drop={drop:+.4f} threshold={task.max_drop_from_baseline} {status}"
+            f"[test_accuracy] {task_name}: baseline={baseline:.4f} quantized={quantized:.4f} "
+            f"drop={drop:+.4f} threshold={threshold} {status}"
         )
-        if drop > task.max_drop_from_baseline:
+        if not passed:
             failures.append(
-                f"{task.name}: drop {drop:.4f} exceeds threshold {task.max_drop_from_baseline}"
+                f"{task_name}: drop {drop:.4f} exceeds threshold {threshold}"
             )
 
     if failures:

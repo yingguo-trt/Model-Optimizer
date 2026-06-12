@@ -23,17 +23,9 @@ from pathlib import Path
 
 import pytest
 
-# task -> (group_key, metric_key, score_key) inside results.yml
-TASK_INFO: dict[str, tuple[str, str, str]] = {
-    "nemo_skills.mmlu-pro": ("mmlu-pro", "pass@1", "symbolic_correct"),
-    "nemo_skills.ns_gpqa": ("gpqa", "pass@1[avg-of-8]", "symbolic_correct"),
-    "nemo_skills.aime25": ("aime25", "pass@1[avg-of-8]", "symbolic_correct"),
-    "ns_scicode": ("scicode", "pass@1[avg-of-8]", "subtask_accuracy"),
-    "nemo_skills.ifbench": ("ifbench", "pass@1[avg-of-8]", "prompt_loose_accuracy"),
-    "nemo_skills.ifeval": ("ifeval", "pass@1[avg-of-8]", "prompt_loose_accuracy"),
-    "nemo_skills.gsm8k": ("gsm8k", "pass@1[avg-of-4]", "symbolic_correct"),
-    "ns_aa_lcr": ("aalcr", "pass@1", "judge_correct"),
-}
+# TASK_INFO (task -> results.yml path) and results parsing are shared with the
+# modelopt-jenkins harness so both resolve scores identically.
+from _test_utils.nv_eval_result_parser import TASK_INFO, collect_scores
 
 _INVOCATION_ID_RE = re.compile(r"to check status: nv-eval status (\S+)")
 _SERVER_NAME_RE = re.compile(r"--name (llm_server_\d+)")
@@ -87,7 +79,7 @@ def run(
     """
     for task in tasks:
         if task not in TASK_INFO:
-            _skip_or_fail(f"task {task!r} missing from nv_eval_runner.TASK_INFO")
+            _skip_or_fail(f"task {task!r} missing from nv_eval_result_parser.TASK_INFO")
 
     nv_eval_dir = _get_nv_eval_dir()
 
@@ -153,7 +145,7 @@ def run(
             raise RuntimeError(f"launch_eval.py exited with code {proc.returncode}")
 
         invocation_id = _extract_invocation_id(proc.stdout)
-        return _collect_scores(nv_eval_dir, invocation_id, tasks)
+        return collect_scores(nv_eval_dir / "nv_eval_results", invocation_id, tasks)
     finally:
         _teardown_servers(proc.stdout)
 
@@ -176,58 +168,3 @@ def _teardown_servers(launch_stdout: str) -> None:
         )
         if result.returncode == 0:
             print(f"[nv_eval_runner] tore down server container {name}")
-
-
-def _dig(node, keys: list, results_yml: Path):
-    """Walk ``keys`` into ``node``; on a miss, report which key and what keys exist there."""
-    for i, key in enumerate(keys):
-        if not isinstance(node, dict) or key not in node:
-            where = ".".join(map(str, keys[:i])) or "<root>"
-            available = sorted(node.keys()) if isinstance(node, dict) else f"<{type(node).__name__}>"
-            raise RuntimeError(
-                f"{results_yml}: missing {key!r} under {where}; available there: {available}"
-            )
-        node = node[key]
-    return node
-
-
-def _collect_scores(nv_eval_dir: Path, invocation_id: str, tasks: list[str]) -> dict[str, float]:
-    import yaml
-
-    results_root = nv_eval_dir / "nv_eval_results"
-    run_dirs = sorted(p for p in results_root.rglob(f"*-{invocation_id}") if p.is_dir())
-    if not run_dirs:
-        raise RuntimeError(
-            f"no run directory matched *-{invocation_id} under {results_root}"
-        )
-    run_dir = run_dirs[0]
-
-    scores: dict[str, float] = {}
-    for idx, task in enumerate(tasks):
-        group_key, metric_key, score_key = TASK_INFO[task]
-        candidate_results = [
-            run_dir / f"{task}.{idx}" / "artifacts" / "results.yml",
-            run_dir / task / "artifacts" / "results.yml",
-        ]
-        results_yml = next(
-            (path for path in candidate_results if path.exists()), candidate_results[0]
-        )
-        if not results_yml.exists():
-            checked = "\n".join(f"  {path}" for path in candidate_results)
-            tree = "\n".join(
-                f"  {p.relative_to(run_dir)}" for p in sorted(run_dir.rglob("*")) if p.is_file()
-            )
-            raise RuntimeError(
-                f"results.yml missing for task {task!r}: {results_yml}\n"
-                f"checked paths:\n{checked}\n"
-                f"files actually written under {run_dir}:\n{tree or '  (none — eval produced no output)'}"
-            )
-        with open(results_yml) as f:
-            data = yaml.safe_load(f)
-        path = ["results", "groups", group_key, "metrics", metric_key, "scores", score_key, "value"]
-        value = float(_dig(data, path, results_yml))
-        # Compare all drops as fractions; nemo-skills emits percentages.
-        if value > 1.0:
-            value /= 100.0
-        scores[task] = value
-    return scores
