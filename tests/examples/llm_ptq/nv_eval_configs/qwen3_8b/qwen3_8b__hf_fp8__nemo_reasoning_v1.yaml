@@ -12,7 +12,11 @@ quant_recipe: published/fp8
 backend: vllm
 tensor_parallel_size: 1
 min_gpu_arch: AdaLovelace
-mode: auto
+mode: parallel
+resources:
+  min_gpus: 2
+  preferred_gpus: 2
+  placement: single_node
 serving:
   max_new_tokens: 32768
   max_num_tokens: 8192
