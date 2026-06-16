@@ -1,4 +1,4 @@
-case_id: qwen3_8b__hf_fp8__nemo_skills_reasoning
+case_id: qwen3_8b__hf_fp8__nemo_reasoning_v1
 suite: llm_ptq_accuracy
 model_name: Qwen3-8B
 baseline_model:
