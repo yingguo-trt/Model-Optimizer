@@ -1,4 +1,4 @@
-case_id: qwen3_8b__modelopt_ptq_fp8__nemo_reasoning_v1
+case_id: qwen3_8b__generated_ptq_fp8__nemo_reasoning_v1
 suite: llm_ptq_accuracy
 model_name: Qwen3-8B
 baseline_model:
@@ -7,7 +7,6 @@ baseline_model:
 quantized_model:
   artifact_mode: generated
   source: modelopt_ptq
-  output_dir: ${MODELOPT_NV_EVAL_ARTIFACT_ROOT}/qwen3_8b_fp8/${MODELOPT_COMMIT}
   quantize:
     recipe: general/ptq/fp8_default-kv_fp8_cast
     dataset: cnn_dailymail

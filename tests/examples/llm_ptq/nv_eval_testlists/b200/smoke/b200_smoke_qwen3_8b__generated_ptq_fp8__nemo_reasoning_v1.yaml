@@ -1,0 +1,9 @@
+suite_id: b200_smoke_qwen3_8b__generated_ptq_fp8__nemo_reasoning_v1
+description: Minimal B200 smoke shard for validating generated ModelOpt PTQ FP8 artifacts.
+cases:
+  - case_id: qwen3_8b__generated_ptq_fp8__nemo_reasoning_v1
+    shards:
+      - shard_id: gsm8k_o0_n64
+        task_filter: nemo_skills.gsm8k
+        sample_offset: 0
+        sample_limit: 64
