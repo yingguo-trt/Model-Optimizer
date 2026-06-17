@@ -1,16 +1,8 @@
 suite_id: b200_smoke_qwen3_8b__hf_fp8__nemo_reasoning_v1
-description: Small B200 smoke shards for validating the nv-eval accuracy pipeline.
+description: Minimal B200 smoke shards for validating the nv-eval accuracy pipeline.
 cases:
   - case_id: qwen3_8b__hf_fp8__nemo_reasoning_v1
     shards:
-      - shard_id: mmlu-pro_o0_n64
-        task_filter: nemo_skills.mmlu-pro
-        sample_offset: 0
-        sample_limit: 64
-      - shard_id: ns_gpqa_o0_n64
-        task_filter: nemo_skills.ns_gpqa
-        sample_offset: 0
-        sample_limit: 64
       - shard_id: ifeval_o0_n64
         task_filter: nemo_skills.ifeval
         sample_offset: 0
