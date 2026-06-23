@@ -14,6 +14,7 @@ quantized_model:
     calib_size: 512
     trust_remote_code: true
     reuse_existing: true
+    timeout_seconds: 7200
 qformat: fp8
 quant_recipe: general/ptq/fp8_default-kv_fp8_cast
 backend: vllm
