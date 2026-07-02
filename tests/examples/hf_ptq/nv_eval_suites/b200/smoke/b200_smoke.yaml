@@ -1,0 +1,12 @@
+schema_version: 1
+suite_id: b200_smoke
+description: B200 smoke registry for published and CI-generated ModelOpt accuracy cases.
+runs:
+  - run_id: qwen3_8b_hf_fp8
+    case_id: qwen3_8b__hf_fp8__nemo_reasoning_v1
+    testlist_file: tests/examples/hf_ptq/nv_eval_testlists/b200/smoke/b200_smoke_qwen3_8b__hf_fp8__nemo_reasoning_v1.yaml
+    labels: [smoke, b200, published]
+  - run_id: qwen3_8b_generated_ptq_fp8
+    case_id: qwen3_8b__generated_ptq_fp8__nemo_reasoning_v1
+    testlist_file: tests/examples/hf_ptq/nv_eval_testlists/b200/smoke/b200_smoke_qwen3_8b__generated_ptq_fp8__nemo_reasoning_v1.yaml
+    labels: [smoke, b200, generated]
