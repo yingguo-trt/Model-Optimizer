@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+RESULT_PARSER_API_VERSION = 1
+
 # task -> (group_key, metric_key, score_key) inside results.yml
 TASK_INFO: dict[str, tuple[str, str, str]] = {
     "nemo_skills.mmlu-pro": ("mmlu-pro", "pass@1", "symbolic_correct"),
