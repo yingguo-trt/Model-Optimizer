@@ -18,6 +18,7 @@ Pytest-free so the OSS pytest (test_accuracy) and the modelopt-jenkins harness i
 the SAME task->metric mapping and scoring, instead of each grepping logs or duplicating
 the path into results.yml.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -40,7 +41,9 @@ def _dig(node, keys: list, results_yml: Path):
     for i, key in enumerate(keys):
         if not isinstance(node, dict) or key not in node:
             where = ".".join(map(str, keys[:i])) or "<root>"
-            available = sorted(node.keys()) if isinstance(node, dict) else f"<{type(node).__name__}>"
+            available = (
+                sorted(node.keys()) if isinstance(node, dict) else f"<{type(node).__name__}>"
+            )
             raise RuntimeError(
                 f"{results_yml}: missing {key!r} under {where}; available there: {available}"
             )
@@ -48,23 +51,18 @@ def _dig(node, keys: list, results_yml: Path):
     return node
 
 
-def collect_scores(results_root, invocation_id: str, task_names: list[str]) -> dict[str, float]:
-    """Return ``{task: score}`` for ``task_names`` from the run under ``results_root``.
-
-    ``results_root`` is the directory nv-eval writes run dirs into (``nv_eval_results``
-    for the local executor; the shared output_dir for slurm/pyxis).
-    """
-    import yaml
-
+def resolve_results_paths(
+    results_root, invocation_id: str, task_names: list[str]
+) -> dict[str, Path]:
+    """Return the concrete per-task ``results.yml`` paths for one NEL run."""
     results_root = Path(results_root)
     run_dirs = sorted(p for p in results_root.rglob(f"*-{invocation_id}") if p.is_dir())
     if not run_dirs:
         raise RuntimeError(f"no run directory matched *-{invocation_id} under {results_root}")
     run_dir = run_dirs[0]
 
-    scores: dict[str, float] = {}
+    paths: dict[str, Path] = {}
     for idx, task in enumerate(task_names):
-        group_key, metric_key, score_key = TASK_INFO[task]
         candidate_results = [
             run_dir / f"{task}.{idx}" / "artifacts" / "results.yml",
             run_dir / task / "artifacts" / "results.yml",
@@ -82,12 +80,30 @@ def collect_scores(results_root, invocation_id: str, task_names: list[str]) -> d
                 f"checked paths:\n{checked}\n"
                 f"files actually written under {run_dir}:\n{tree or '  (none — eval produced no output)'}"
             )
+        paths[task] = results_yml
+    return paths
+
+
+def collect_scores(results_root, invocation_id: str, task_names: list[str]) -> dict[str, float]:
+    """Return ``{task: score}`` for ``task_names`` from the run under ``results_root``.
+
+    ``results_root`` is the directory nv-eval writes run dirs into (``nv_eval_results``
+    for the local executor; the shared output_dir for slurm/pyxis).
+    """
+    import yaml
+
+    results_paths = resolve_results_paths(results_root, invocation_id, task_names)
+
+    scores: dict[str, float] = {}
+    for task in task_names:
+        group_key, metric_key, score_key = TASK_INFO[task]
+        results_yml = results_paths[task]
         with open(results_yml) as f:
             data = yaml.safe_load(f)
         path = ["results", "groups", group_key, "metrics", metric_key, "scores", score_key, "value"]
         value = float(_dig(data, path, results_yml))
-        # Compare all drops as fractions; nemo-skills emits percentages.
-        if value > 1.0:
-            value /= 100.0
+        # Compare all drops as fractions; NEL accuracy scores are percentages,
+        # including valid values below 1%.
+        value /= 100.0
         scores[task] = value
     return scores
