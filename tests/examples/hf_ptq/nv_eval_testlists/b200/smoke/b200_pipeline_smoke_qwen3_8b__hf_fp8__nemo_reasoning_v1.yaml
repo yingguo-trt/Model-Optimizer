@@ -1,0 +1,9 @@
+suite_id: b200_pipeline_smoke_qwen3_8b__hf_fp8__nemo_reasoning_v1
+description: Fast single-shard smoke for Jenkins, Slurm, runtime, NEL, paired comparison, and reporting seams.
+cases:
+  - case_id: qwen3_8b__hf_fp8__nemo_reasoning_v1
+    shards:
+      - shard_id: gsm8k_o0_n8
+        task_filter: nemo_skills.gsm8k
+        sample_offset: 0
+        sample_limit: 8
