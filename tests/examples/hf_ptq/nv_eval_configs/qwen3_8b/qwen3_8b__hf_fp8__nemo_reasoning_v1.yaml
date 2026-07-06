@@ -4,9 +4,11 @@ model_name: Qwen3-8B
 baseline_model:
   source: hf_repo
   uri: Qwen/Qwen3-8B
+  revision: b968826d9c46dd6066d109eabc6255188de91218
 quantized_model:
   source: hf_repo
   uri: nvidia/Qwen3-8B-FP8
+  revision: 2cebc4c89e25abc17668c81b01dceaf3d8b914d5
 qformat: fp8
 quant_recipe: published/fp8
 backend: vllm

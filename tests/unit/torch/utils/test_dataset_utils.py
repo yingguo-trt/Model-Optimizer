@@ -807,6 +807,69 @@ class TestDatasetCombosExpansion:
             get_dataset_samples("cnn_nemotron_v2_mix", num_samples=1)
 
 
+def test_dataset_revision_is_forwarded_to_huggingface(monkeypatch):
+    calls = []
+
+    def _load_dataset(*args, **kwargs):
+        calls.append((args, kwargs))
+        return [{"article": "immutable calibration sample"}]
+
+    import datasets
+
+    monkeypatch.setattr(datasets, "load_dataset", _load_dataset)
+
+    samples = get_dataset_samples("cnn_dailymail", num_samples=1, revision="dataset-commit-sha")
+
+    assert samples == ["immutable calibration sample"]
+    assert calls[0][1]["revision"] == "dataset-commit-sha"
+
+
+def test_local_dataset_rejects_revision_before_optional_loader_fallback(
+    tmp_path,
+):
+    local_jsonl = tmp_path / "calibration.jsonl"
+    local_jsonl.write_text('{"text": "sample"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="only applies to remote Hugging Face"):
+        get_dataset_samples(str(local_jsonl), num_samples=1, revision="dataset-commit-sha")
+
+
+def test_dataset_dataloader_forwards_revisions_per_source(monkeypatch, tiny_tokenizer):
+    calls = []
+
+    def _get_samples(name, num_sample, **kwargs):
+        calls.append((name, num_sample, kwargs.get("revision")))
+        return [f"{name}-{index}" for index in range(num_sample)]
+
+    monkeypatch.setattr(dataset_utils, "get_dataset_samples", _get_samples)
+
+    get_dataset_dataloader(
+        dataset_name=["source-a", "source-b"],
+        dataset_revision=["revision-a", "revision-b"],
+        tokenizer=tiny_tokenizer,
+        num_samples=[1, 1],
+        batch_size=1,
+        max_sample_length=16,
+    )
+
+    assert calls == [
+        ("source-a", 1, "revision-a"),
+        ("source-b", 1, "revision-b"),
+    ]
+
+
+def test_dataset_combo_rejects_one_ambiguous_revision(tiny_tokenizer):
+    with pytest.raises(ValueError, match="cannot be applied to combo"):
+        get_dataset_dataloader(
+            dataset_name="cnn_nemotron_v2_mix",
+            dataset_revision="ambiguous-revision",
+            tokenizer=tiny_tokenizer,
+            num_samples=2,
+            batch_size=1,
+            max_sample_length=16,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Arbitrary-dataset round-trips. We build a tiny on-disk dataset directory
 # (``train``/``test`` parquet with a ``text`` column) and load it through the

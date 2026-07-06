@@ -45,6 +45,69 @@ def _parse_hf_ptq_args(monkeypatch, *args):
     return hf_ptq, parsed_args
 
 
+def test_model_revision_materializes_one_immutable_snapshot(monkeypatch, tmp_path):
+    hf_ptq = _import_hf_ptq(monkeypatch)
+    snapshot = tmp_path / "hub" / "models--Qwen--Qwen3-8B" / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    calls = []
+
+    def _snapshot_download(*, repo_id, revision):
+        calls.append((repo_id, revision))
+        return str(snapshot)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot_download)
+
+    resolved = hf_ptq._materialize_model_revision("Qwen/Qwen3-8B", "abc123")
+
+    assert resolved == str(snapshot.resolve())
+    assert calls == [("Qwen/Qwen3-8B", "abc123")]
+
+
+def test_model_revision_rejects_local_path(monkeypatch, tmp_path):
+    hf_ptq = _import_hf_ptq(monkeypatch)
+    local_model = tmp_path / "model"
+    local_model.mkdir()
+
+    with pytest.raises(ValueError, match="only applies to a Hugging Face repository"):
+        hf_ptq._materialize_model_revision(str(local_model), "abc123")
+
+
+def test_revision_args_are_explicit_and_dataset_revisions_align(monkeypatch):
+    hf_ptq, args = _parse_hf_ptq_args(
+        monkeypatch,
+        "--model",
+        "Qwen/Qwen3-8B",
+        "--model_revision",
+        "model-sha",
+        "--dataset",
+        "cnn_dailymail,wikipedia",
+        "--dataset_revision",
+        "dataset-sha-1,dataset-sha-2",
+    )
+
+    hf_ptq._normalize_dataset_revisions(args)
+
+    assert args.model_revision == "model-sha"
+    assert args.dataset_revision == ["dataset-sha-1", "dataset-sha-2"]
+
+
+def test_dataset_revision_count_mismatch_is_fail_closed(monkeypatch):
+    hf_ptq, args = _parse_hf_ptq_args(
+        monkeypatch,
+        "--model",
+        "Qwen/Qwen3-8B",
+        "--dataset",
+        "cnn_dailymail,wikipedia",
+        "--dataset_revision",
+        "only-one-revision",
+    )
+
+    with pytest.raises(ValueError, match="one revision per --dataset"):
+        hf_ptq._normalize_dataset_revisions(args)
+
+
 def test_autoquant_recipe_builds_mtq_inputs(monkeypatch):
     """The recipe path maps an AutoQuantizeConfig to the expected mtq.auto_quantize inputs."""
     hf_ptq, args = _parse_hf_ptq_args(

@@ -88,6 +88,65 @@ from modelopt.torch.utils.vlm_dataset_utils import get_vlm_dataset_dataloader
 RAND_SEED = 1234
 
 
+def _materialize_model_revision(model_path: str, revision: str | None) -> str:
+    """Resolve a remote HF model revision to an immutable local snapshot.
+
+    Downstream model/config/tokenizer/processor loaders all consume
+    ``args.pyt_ckpt_path``. Replacing it once here prevents individual loading
+    branches from accidentally following a mutable repository default.
+    """
+
+    if revision is None:
+        return model_path
+    revision = revision.strip()
+    if not revision:
+        raise ValueError("--model_revision must be a non-empty revision")
+
+    local_path = Path(model_path).expanduser()
+    if local_path.exists():
+        raise ValueError(
+            "--model_revision only applies to a Hugging Face repository; "
+            f"{model_path!r} is a local path"
+        )
+
+    from huggingface_hub import snapshot_download
+
+    try:
+        snapshot = Path(snapshot_download(repo_id=model_path, revision=revision)).resolve(
+            strict=True
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to resolve Hugging Face model {model_path!r} at revision {revision!r}"
+        ) from exc
+    if not snapshot.is_dir():
+        raise RuntimeError(f"Resolved Hugging Face model snapshot is not a directory: {snapshot}")
+    print(
+        f"Resolved source model revision: repo={model_path} revision={revision} snapshot={snapshot}"
+    )
+    return str(snapshot)
+
+
+def _normalize_dataset_revisions(args: argparse.Namespace) -> None:
+    raw = getattr(args, "dataset_revision", None)
+    revisions = raw.split(",") if isinstance(raw, str) else raw
+    if revisions is not None:
+        revisions = [revision.strip() for revision in revisions]
+        if any(not revision for revision in revisions):
+            raise ValueError("--dataset_revision entries must be non-empty")
+        if not args.dataset:
+            raise ValueError(
+                "--dataset_revision requires an explicit --dataset; it cannot pin "
+                "the implicit default dataset combo"
+            )
+        if len(revisions) != len(args.dataset):
+            raise ValueError(
+                "--dataset_revision must provide one revision per --dataset: "
+                f"{len(revisions)} != {len(args.dataset)}"
+            )
+    args.dataset_revision = revisions
+
+
 def _kv_cfg_uses_constant_amax(kv_quant_cfg: list[dict[str, Any]]) -> bool:
     """Return True if this KV cfg pins ``use_constant_amax`` on the bmm quantizer.
 
@@ -181,7 +240,10 @@ def make_calib_dataloader(
 ) -> tuple[DataLoader | _DeviceDataLoader, str | None]:
     calib_dataloader = None
     first_text_speech_dataset = None
+    dataset_revisions = getattr(args, "dataset_revision", None)
     if args.specdec_offline_dataset is not None:
+        if dataset_revisions:
+            raise ValueError("--dataset_revision is not supported with --specdec_offline_dataset")
         offline_data_path = Path(args.specdec_offline_dataset)
         dumped_files = sorted(str(p) for p in offline_data_path.glob("*.pt"))
         if not dumped_files:
@@ -200,6 +262,10 @@ def make_calib_dataloader(
         # out of the data collator to avoid interference with dataloader prefetching.
         calib_dataloader = _DeviceDataLoader(raw_loader, device)
     elif args.calib_with_images:
+        if dataset_revisions:
+            raise ValueError(
+                "--dataset_revision is not supported by the image-text calibration loader"
+            )
         # VLM image-text calibration path: assume Nemotron VLM dataset by default.
         assert processor is not None, (
             "Please provide a processor (e.g., AutoProcessor) for image calibration."
@@ -222,6 +288,8 @@ def make_calib_dataloader(
             max_shards=1,
         )
     elif model_type == "whisper":
+        if dataset_revisions:
+            raise ValueError("--dataset_revision is not supported by the speech calibration loader")
         assert processor is not None and isinstance(processor, WhisperProcessor), (
             "The AutoProcessor must be set."
         )
@@ -251,6 +319,7 @@ def make_calib_dataloader(
             max_sample_length=args.calib_seq,
             device=device,
             include_labels=include_labels,
+            dataset_revision=dataset_revisions,
         )
     return calib_dataloader, first_text_speech_dataset
 
@@ -668,6 +737,7 @@ def sparsity_main(
         num_samples=args.calib_size,
         max_sample_length=args.calib_seq,
         device=device,
+        dataset_revision=getattr(args, "dataset_revision", None),
     )
     full_model = mts.sparsify(
         full_model,
@@ -1295,6 +1365,15 @@ def parse_args() -> argparse.Namespace:
         required=True,
     )
     parser.add_argument(
+        "--model_revision",
+        "--model-revision",
+        default=None,
+        help=(
+            "Hugging Face model revision. When set, the repository is resolved "
+            "with snapshot_download and all loading uses that immutable local snapshot."
+        ),
+    )
+    parser.add_argument(
         "--recipe",
         help=(
             "PTQ or AutoQuantize recipe YAML file or name without suffix (e.g. "
@@ -1344,6 +1423,15 @@ def parse_args() -> argparse.Namespace:
         ),
         type=str,
         default=None,
+    )
+    parser.add_argument(
+        "--dataset_revision",
+        "--dataset-revision",
+        default=None,
+        help=(
+            "Hugging Face dataset revision, or a comma-separated list aligned "
+            "with --dataset. Local datasets and implicit dataset combos reject it."
+        ),
     )
     parser.add_argument(
         "--specdec_offline_dataset",
@@ -1555,6 +1643,9 @@ def parse_args() -> argparse.Namespace:
 def main(args: argparse.Namespace):
     if not torch.cuda.is_available():
         raise OSError("GPU is required for inference.")
+    args.pyt_ckpt_path = _materialize_model_revision(
+        args.pyt_ckpt_path, getattr(args, "model_revision", None)
+    )
 
     random.seed(RAND_SEED)
     np.random.seed(RAND_SEED)
@@ -1604,6 +1695,7 @@ if __name__ == "__main__":
 
     args.dataset = args.dataset.split(",") if isinstance(args.dataset, str) else args.dataset
     args.calib_size = [int(num_sample) for num_sample in args.calib_size.split(",")]
+    _normalize_dataset_revisions(args)
 
     if args.specdec_offline_dataset is not None and len(args.calib_size) != 1:
         raise ValueError(

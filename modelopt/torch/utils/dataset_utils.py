@@ -455,6 +455,7 @@ def get_dataset_samples(
     apply_chat_template: bool = False,
     tokenizer: "PreTrainedTokenizerBase | None" = None,
     split: str | list[str] | None = None,
+    revision: str | None = None,
 ) -> list[str]:
     """Load a portion of a dataset with the dataset name and a given size.
 
@@ -486,6 +487,8 @@ def get_dataset_samples(
         split: Override the split(s) to load.  Accepts a single split name or a list.
             If ``None``, uses the splits defined in ``SUPPORTED_DATASET_CONFIG`` for
             registered datasets, or ``["train"]`` for unregistered datasets.
+        revision: Immutable Hugging Face dataset revision. Local dataset paths reject
+            this option instead of silently ignoring it.
 
     Returns:
         Samples: The list of samples.
@@ -518,6 +521,19 @@ def get_dataset_samples(
                 "Either omit ``split`` or pass ``split='train'``."
             )
 
+    local_dataset_path = None
+    if os.path.exists(dataset_name):  # Local path
+        local_dataset_path = dataset_name
+        if not is_jsonl:
+            # Directory paths may match a registered key via their basename
+            # (e.g. /hf-local/abisee/cnn_dailymail -> cnn_dailymail).
+            dataset_name = os.path.basename(os.path.normpath(local_dataset_path))
+    if local_dataset_path and revision:
+        raise ValueError(
+            "``revision`` only applies to remote Hugging Face datasets; "
+            f"got local dataset path {local_dataset_path!r}."
+        )
+
     # Lazy ``datasets`` import: legacy ``.jsonl`` workflows historically didn't
     # require the optional ``datasets`` extra, so keep them working with just
     # the stdlib reader when the package isn't installed.
@@ -527,14 +543,6 @@ def get_dataset_samples(
         if is_jsonl:
             return get_jsonl_text_samples(dataset_name, num_samples, key="text")
         raise
-
-    local_dataset_path = None
-    if os.path.exists(dataset_name):  # Local path
-        local_dataset_path = dataset_name
-        if not is_jsonl:
-            # Directory paths may match a registered key via their basename
-            # (e.g. /hf-local/abisee/cnn_dailymail -> cnn_dailymail).
-            dataset_name = os.path.basename(os.path.normpath(local_dataset_path))
 
     is_registered = not is_jsonl and dataset_name in SUPPORTED_DATASET_CONFIG
 
@@ -589,6 +597,9 @@ def get_dataset_samples(
         def _preprocess(sample: dict) -> str:
             return _auto_preprocess_sample(sample, dataset_name, tokenizer)
 
+    if revision:
+        config["revision"] = revision
+
     if not splits:
         raise ValueError("``split`` must contain at least one split name.")
 
@@ -623,6 +634,7 @@ def get_dataset_samples(
                 data_files=data_files_tmpl.format(split=s),
                 split="train",
                 streaming=True,
+                revision=config.get("revision"),
             )
         return load_dataset(streaming=True, **config, split=s)
 
@@ -750,6 +762,7 @@ def get_dataset_dataloader(
     pack: bool = False,
     distributed: bool = False,
     sampler_kwargs: dict | None = None,
+    dataset_revision: str | list[str] | None = None,
 ) -> DataLoader:
     """Get a dataloader with the dataset name and tokenizer of the target model.
 
@@ -783,6 +796,10 @@ def get_dataset_dataloader(
             (e.g. for data-parallel calibration). ``sampler_kwargs`` supplies ``num_replicas``
             and ``rank``.
         sampler_kwargs: Keyword args for the ``DistributedSampler`` when ``distributed=True``.
+        dataset_revision: Immutable Hugging Face revision for each dataset source. A
+            single string is accepted only when ``dataset_name`` contains one source.
+            Dataset combos reject revisions because one revision cannot identify all
+            member repositories.
 
     Returns:
         An instance of dataloader.
@@ -802,9 +819,21 @@ def get_dataset_dataloader(
     if isinstance(dataset_name, str):
         dataset_name = [dataset_name]
 
+    if dataset_revision is None:
+        dataset_revision = [None] * len(dataset_name)
+    elif isinstance(dataset_revision, str):
+        dataset_revision = [dataset_revision]
+    else:
+        dataset_revision = list(dataset_revision)
+
     assert len(dataset_name) == len(num_samples), (
         "dataset_name and num_samples must be the same length"
     )
+    if len(dataset_name) != len(dataset_revision):
+        raise ValueError(
+            "dataset_name and dataset_revision must have the same length: "
+            f"{len(dataset_name)} != {len(dataset_revision)}"
+        )
 
     # Reject inputs that include both a combo and one of its member datasets
     # (e.g. ``["cnn_dailymail", "cnn_nemotron_v2_mix"]``), since the combo would sample the
@@ -822,17 +851,29 @@ def get_dataset_dataloader(
 
     expanded_names: list[str] = []
     expanded_num_samples: list[int] = []
-    for ds_name, n in zip(dataset_name, num_samples):
+    expanded_revisions: list[str | None] = []
+    for ds_name, n, revision in zip(dataset_name, num_samples, dataset_revision):
         if ds_name in DATASET_COMBOS:
+            if revision:
+                raise ValueError(
+                    f"dataset revision {revision!r} cannot be applied to combo "
+                    f"{ds_name!r}; specify the member datasets and revisions explicitly"
+                )
             members = DATASET_COMBOS[ds_name]
             base, remainder = divmod(n, len(members))
             for i, member in enumerate(members):
                 expanded_names.append(member)
                 expanded_num_samples.append(base + (1 if i < remainder else 0))
+                expanded_revisions.append(None)
         else:
             expanded_names.append(ds_name)
             expanded_num_samples.append(n)
-    dataset_name, num_samples = expanded_names, expanded_num_samples
+            expanded_revisions.append(revision)
+    dataset_name, num_samples, dataset_revision = (
+        expanded_names,
+        expanded_num_samples,
+        expanded_revisions,
+    )
 
     # Sample count semantics:
     # - pack=False: gather exactly `num_sample` raw docs per source, one per output row.
@@ -840,12 +881,13 @@ def get_dataset_dataloader(
     #               since each row greedily packs multiple docs.
     sample_multiplier = 8 if pack else 1
     all_samples = []
-    for ds_name, num_sample in zip(dataset_name, num_samples):
+    for ds_name, num_sample, revision in zip(dataset_name, num_samples, dataset_revision):
         samples = get_dataset_samples(
             ds_name,
             num_sample * sample_multiplier,
             apply_chat_template=apply_chat_template,
             tokenizer=tokenizer,
+            revision=revision,
         )
         all_samples.extend(samples)
 

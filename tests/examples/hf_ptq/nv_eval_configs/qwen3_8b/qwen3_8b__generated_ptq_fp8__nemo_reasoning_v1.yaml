@@ -4,12 +4,14 @@ model_name: Qwen3-8B
 baseline_model:
   source: hf_repo
   uri: Qwen/Qwen3-8B
+  revision: b968826d9c46dd6066d109eabc6255188de91218
 quantized_model:
   artifact_mode: generated
   source: modelopt_ptq
   quantize:
     recipe: general/ptq/fp8_default-kv_fp8_cast
     dataset: cnn_dailymail
+    dataset_revision: 96df5e686bee6baa90b8bee7c28b81fa3fa6223d
     batch_size: 8
     calib_size: 512
     trust_remote_code: true
