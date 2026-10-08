@@ -31,12 +31,14 @@ from types import SimpleNamespace
 import pytest
 import torch
 from vllm.v1.attention.backends.flash_attn import FlashAttentionImpl
+from vllm.v1.attention.backends.flashinfer import FlashInferBackend, FlashInferImpl
 
 from modelopt.torch.kernels.common.attention import IS_AVAILABLE as TRITON_KERNEL_AVAILABLE
 from modelopt.torch.sparsity.attention_sparsity.plugins import vllm as vllm_plugin
 
 if TRITON_KERNEL_AVAILABLE:
     from modelopt.torch.kernels.common.attention import attention as triton_attention
+    from modelopt.torch.kernels.sparsity.attention.calibrate import attention_calibrate
 
 _ACTIVE_PREFILL_SPARSE_KW = {
     "sparsity_n": 2,
@@ -100,6 +102,138 @@ def _make_impl(num_heads, head_dim, num_kv_heads):
         kv_cache_dtype="auto",
         logits_soft_cap=None,
     )
+
+
+@pytest.mark.skipif(not TRITON_KERNEL_AVAILABLE, reason="Need CUDA + triton")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("q_len", [17, 1], ids=["prefill", "decode"])
+@pytest.mark.parametrize("calibrate", [True, False], ids=["calibration", "serving"])
+def test_flashinfer_packed_cache_matches_contiguous(dtype, q_len, calibrate):
+    """Native packed writes feed real calibration and serving kernels correctly."""
+    if getattr(FlashInferBackend, "forward_includes_kv_cache_update", True):
+        pytest.skip("Packed caches require native pre-forward KV updates")
+
+    torch.manual_seed(7)
+    seq_len, num_heads, num_kv_heads, head_dim, page_size = 300, 4, 2, 64, 16
+    num_pages = (seq_len + page_size - 1) // page_size
+    num_blocks = num_pages + 2
+    q = torch.ones(q_len + 2, num_heads, head_dim, device="cuda", dtype=dtype)
+    q += torch.randn_like(q) * 0.01
+    k = torch.randn(seq_len, num_kv_heads, head_dim, device="cuda", dtype=dtype) * 0.01
+    k[:128] += 0.5
+    v = torch.randn_like(k) * 0.01
+    v[:128] += 0.25
+    v[128:] += 2.0
+    trials = [1e-3, 1e-1, 5e-1]
+    scale = 1.0 / (head_dim**0.5)
+    locs = torch.zeros(1, device="cuda", dtype=torch.int32)
+    q_lens = torch.tensor([q_len], device="cuda", dtype=torch.int32)
+    seq_lens = torch.tensor([seq_len], device="cuda", dtype=torch.int32)
+    block_table = (torch.arange(num_pages, device="cuda", dtype=torch.int32).flip(0) + 2)[None, :]
+    positions = torch.arange(seq_len, device="cuda", dtype=torch.int64)
+    slots = block_table[0, positions // page_size].to(torch.int64) * page_size
+    slots += positions % page_size
+    cache_shape = (num_blocks, page_size, num_kv_heads, head_dim)
+    key_cache = k.new_zeros(cache_shape)
+    value_cache = v.new_zeros(cache_shape)
+    key_cache.view(-1, num_kv_heads, head_dim)[slots] = k
+    value_cache.view(-1, num_kv_heads, head_dim)[slots] = v
+
+    packed = k.new_zeros(num_blocks, num_kv_heads, page_size, 2 * head_dim)
+    layer = SimpleNamespace(
+        _k_scale=torch.ones((), device="cuda"),
+        _v_scale=torch.ones((), device="cuda"),
+    )
+    writer = object.__new__(FlashInferImpl)
+    writer.__dict__.update(
+        head_size=head_dim,
+        num_kv_heads=num_kv_heads,
+        cache_dtype="auto",
+        is_kvcache_nvfp4=False,
+        kv_sharing_target_layer_name=None,
+    )
+    writer.do_kv_cache_update(layer, k, v, packed, slots)
+    packed_key, packed_value = packed.transpose(1, 2).split(head_dim, dim=-1)
+    torch.testing.assert_close(packed_key, key_cache, rtol=0, atol=0)
+    torch.testing.assert_close(packed_value, value_cache, rtol=0, atol=0)
+
+    ref_kw = {
+        "b_start_loc": locs,
+        "b_seq_len": q_lens,
+        "max_input_len": q_len,
+        "is_causal": q_len > 1,
+        "softmax_scale": scale,
+        "b_start_loc_k": locs,
+        "b_seq_len_k": seq_lens,
+        "max_input_len_k": seq_len,
+    }
+    dense_ref, counters_ref = attention_calibrate(
+        q[:q_len], k, v, threshold_trials=trials, **ref_kw
+    )
+    assert counters_ref[:, 0].tolist() == [num_heads * 3] * len(trials)
+    assert counters_ref[1, 1].item() > 0
+    expected = (
+        dense_ref
+        if calibrate
+        else triton_attention(q[:q_len], k, v, skip_softmax_threshold=trials[1], **ref_kw)
+    )
+    if not calibrate:
+        assert not torch.allclose(expected, dense_ref, rtol=1e-3, atol=1e-3)
+
+    metadata = SimpleNamespace(
+        use_cascade=False,
+        _modelopt_block_table=block_table,
+        _modelopt_seq_lens=seq_lens,
+        _modelopt_query_start_loc=torch.tensor([0, q_len], device="cuda", dtype=torch.int32),
+        _modelopt_num_actual_tokens=q_len,
+        _modelopt_max_query_len=q_len,
+        _modelopt_max_seq_len=seq_len,
+        _modelopt_causal=q_len > 1,
+        slot_mapping=slots[-q_len:],
+    )
+    legacy = torch.stack((key_cache, value_cache), dim=1)
+    hnd = legacy.permute(0, 1, 3, 2, 4).contiguous().permute(0, 1, 3, 2, 4)
+
+    def native_forward(*_args, **_kwargs):
+        raise AssertionError("Active ModelOpt attention must not use native fallback")
+
+    for kv_cache in (legacy, hnd, packed):
+        impl = SimpleNamespace(
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            head_size=head_dim,
+            scale=scale,
+            sparse_kw={"skip_softmax_threshold": trials[1]},
+            quant_kw={"p_qdq": None, "p_qdq_amax": 1.0, "v_qdq": None, "v_qdq_amax": None},
+            _calibrate=calibrate,
+            _calib_threshold_trials=trials,
+            _calib_records=[],
+        )
+        output = torch.full_like(q, -123)
+        actual = vllm_plugin._flashinfer_forward(
+            impl,
+            native_forward,
+            layer,
+            q,
+            k[-q_len:],
+            v[-q_len:],
+            kv_cache,
+            metadata,
+            output=output,
+        )
+        assert actual is output
+        assert torch.isfinite(actual).all()
+        torch.testing.assert_close(actual[:q_len], expected, rtol=1e-3, atol=1e-3)
+        assert torch.equal(actual[q_len:], torch.full_like(actual[q_len:], -123))
+        if calibrate:
+            assert impl._calib_records == [
+                {
+                    "phase": "prefill" if q_len > 1 else "decode",
+                    "sample_length": seq_len,
+                    "total_tiles": counters_ref[:, 0].tolist(),
+                    "skipped_tiles": counters_ref[:, 1].tolist(),
+                }
+            ]
 
 
 @pytest.mark.skipif(not TRITON_KERNEL_AVAILABLE, reason="Need CUDA + triton")
