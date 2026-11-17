@@ -134,7 +134,7 @@ The newly added release cases have the following initial deployment recipes:
 | NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 | vLLM | `vllm/vllm-openai:v0.32.0` | 1 |
 | NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr | vLLM | `vllm/vllm-openai:v0.32.0` | 1 |
 | Step-5-Preview-NVFP4 | vLLM | `vllm/vllm-openai:step-5-preview` | 4 |
-| Qwen-Image-NVFP4 | TRT-LLM VisualGen | `nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc4.dev202611160007` (nightly) | 1 |
+| Qwen-Image-NVFP4 | TRT-LLM VisualGen | `nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc3` | 1 |
 
 Each YAML links its upstream recipe. These configurations await GPU validation
 in this suite; image tags alone are not execution evidence. The LiLiCorr recipe
