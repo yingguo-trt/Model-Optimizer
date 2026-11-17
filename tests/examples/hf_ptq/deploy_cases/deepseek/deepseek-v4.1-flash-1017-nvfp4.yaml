@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Model card settings; needs vllm-project/vllm#61530 or sgl-project/sglang#47935.
+# Null quantization lets each engine detect the mixed FP8 + NVFP4 quantization_config.
+test_deepseek:
+  - model_id: nvidia/DeepSeek-V4.1-Flash-1017-NVFP4
+    tensor_parallel_size: 4
+    mini_sm: 100
+    backends:
+      vllm:
+        engine_kwargs:
+          trust_remote_code: true
+          max_model_len: 4096
+          kv_cache_dtype: fp8
+          quantization:
+          tokenizer_mode: deepseek_v41
+          attention_config:
+            backend: FLASHINFER_MLA_SPARSE_DSV41
+            indexer_kv_dtype: mxfp4
+            indexer_sparse_logits: true
+          engram_config:
+            # The model card keeps the Engram tables in host memory.
+            cpu_offload: true
+        # vLLM supports the forced indexer_sparse_logits path on the SM100 family.
+        sm_family: 100
+        sampling_kwargs:
+          temperature: 0.8
+          top_p: 0.9
+      sglang:
+        engine_kwargs:
+          trust_remote_code: true
+          context_length: 4096
+          quantization:
+          kv_cache_dtype: fp8_e4m3
+          dsv4_attn_backend: flashmla
+          mem_fraction_static: 0.9
+          engram_config:
+            placement: cpu
+            replication: none
+            lookup: auto

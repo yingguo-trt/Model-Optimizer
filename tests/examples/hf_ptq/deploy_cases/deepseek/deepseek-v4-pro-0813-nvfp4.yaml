@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The model card leaves mixed FP8 + NVFP4 quantization detection to the engine.
+test_deepseek:
+  - model_id: nvidia/DeepSeek-V4-Pro-0813-NVFP4
+    tensor_parallel_size: 8
+    mini_sm: 100
+    backends:
+      vllm:
+        engine_kwargs:
+          trust_remote_code: true
+          max_model_len: 4096
+          kv_cache_dtype: fp8
+          quantization:
+        sampling_kwargs:
+          temperature: 0.8
+          top_p: 0.9
+      sglang:
+        engine_kwargs:
+          trust_remote_code: true
+          context_length: 4096
+          quantization:

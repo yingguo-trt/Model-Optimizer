@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4#quick-start
+# Image: vllm/vllm-openai:v0.32.0; DGX Spark recipe, awaiting GPU validation here.
+test_nemotron_lilicorr:
+  - model_id: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr
+    base_model: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4
+    require_speculation: true
+    tensor_parallel_size: 1
+    mini_sm: 121
+    input_config:
+      prompt: Explain what a compiler does in two sentences.
+    backends:
+      vllm:
+        # Scope this recipe to Spark's architecture; other SM121 SKUs are not qualified.
+        sm_versions: [121]
+        engine_kwargs:
+          trust_remote_code: true
+          disable_log_stats: false
+          max_num_seqs: 1
+          gpu_memory_utilization: 0.75
+          max_num_batched_tokens: 8192
+          speculative_config:
+            method: dflash
+            num_speculative_tokens: 7
+          mamba_backend: flashinfer
+          mamba_ssm_cache_dtype: float16
+          enable_mamba_cache_stochastic_rounding: true
+          mamba_cache_philox_rounds: 5
+          enable_mamba_shared_prefix_checkpoint: true
+          block_size: 64
+          prefix_match_unit: 64
+          # Smaller context and bounded decoding exercise the drafter without a long-context test.
+          max_model_len: 8192
+        sampling_kwargs:
+          temperature: 0
+          min_tokens: 16
+          max_tokens: 128
+        chat_kwargs:
+          chat_template_kwargs:
+            enable_thinking: false

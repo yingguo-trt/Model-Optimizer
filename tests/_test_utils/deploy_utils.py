@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import itertools
+import base64
+import copy
+import io
 import os
 import subprocess
 import sys
@@ -22,6 +24,8 @@ import traceback
 
 import pytest
 import torch
+
+from .deploy_config import engine_tp_kwargs
 
 # Cache for available backends detection (computed once at import time)
 _AVAILABLE_BACKENDS = None
@@ -69,9 +73,10 @@ def _run_trtllm_deploy(
     model_id: str,
     tensor_parallel_size: int,
     mini_sm: int,
-    attn_backend: str,
     base_model: str,
-    eagle3_one_model: bool,
+    engine_kwargs: dict | None = None,
+    sampling_kwargs: dict | None = None,
+    **request_kwargs,
 ) -> None:
     """Top-level entry for subprocess: run TensorRT-LLM deploy in a child process."""
     try:
@@ -80,9 +85,10 @@ def _run_trtllm_deploy(
             model_id=model_id,
             tensor_parallel_size=tensor_parallel_size,
             mini_sm=mini_sm,
-            attn_backend=attn_backend,
             base_model=base_model,
-            eagle3_one_model=eagle3_one_model,
+            engine_kwargs=engine_kwargs,
+            sampling_kwargs=sampling_kwargs,
+            **request_kwargs,
         )
         deployer._deploy_trtllm_impl()
     except Exception:
@@ -94,9 +100,10 @@ def _run_vllm_deploy(
     model_id: str,
     tensor_parallel_size: int,
     mini_sm: int,
-    attn_backend: str,
     base_model: str,
-    eagle3_one_model: bool,
+    engine_kwargs: dict | None = None,
+    sampling_kwargs: dict | None = None,
+    **request_kwargs,
 ) -> None:
     """Top-level entry for subprocess: run vLLM deploy in a child process."""
     try:
@@ -105,9 +112,10 @@ def _run_vllm_deploy(
             model_id=model_id,
             tensor_parallel_size=tensor_parallel_size,
             mini_sm=mini_sm,
-            attn_backend=attn_backend,
             base_model=base_model,
-            eagle3_one_model=eagle3_one_model,
+            engine_kwargs=engine_kwargs,
+            sampling_kwargs=sampling_kwargs,
+            **request_kwargs,
         )
         deployer._deploy_vllm_impl()
     except Exception:
@@ -119,9 +127,10 @@ def _run_sglang_deploy(
     model_id: str,
     tensor_parallel_size: int,
     mini_sm: int,
-    attn_backend: str,
     base_model: str,
-    eagle3_one_model: bool,
+    engine_kwargs: dict | None = None,
+    sampling_kwargs: dict | None = None,
+    **request_kwargs,
 ) -> None:
     """Top-level entry for subprocess: run SGLang deploy in a child process."""
     try:
@@ -130,9 +139,10 @@ def _run_sglang_deploy(
             model_id=model_id,
             tensor_parallel_size=tensor_parallel_size,
             mini_sm=mini_sm,
-            attn_backend=attn_backend,
             base_model=base_model,
-            eagle3_one_model=eagle3_one_model,
+            engine_kwargs=engine_kwargs,
+            sampling_kwargs=sampling_kwargs,
+            **request_kwargs,
         )
         deployer._deploy_sglang_impl()
     except Exception:
@@ -145,9 +155,10 @@ def _run_deploy_via_subprocess(
     model_id: str,
     tensor_parallel_size: int,
     mini_sm: int,
-    attn_backend: str,
     base_model: str,
-    eagle3_one_model: bool,
+    engine_kwargs: dict,
+    sampling_kwargs: dict,
+    **request_kwargs,
 ) -> None:
     """Run deploy in a subprocess and print its stdout/stderr so pytest capture=tee-sys captures to DB."""
     tests_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -161,7 +172,8 @@ sys.path.insert(0, {tests_dir!r})
 if __name__ == '__main__':
     from _test_utils.deploy_utils import _run_{backend}_deploy
     _run_{backend}_deploy(
-        {model_id!r}, {tensor_parallel_size}, {mini_sm}, {attn_backend!r}, {base_model!r}, {eagle3_one_model}
+        {model_id!r}, {tensor_parallel_size}, {mini_sm}, {base_model!r},
+        {engine_kwargs!r}, {sampling_kwargs!r}, **{request_kwargs!r}
     )
 """
     if backend == "trtllm":
@@ -222,9 +234,14 @@ class ModelDeployer:
         model_id: str = "",
         tensor_parallel_size: int = 1,
         mini_sm: int = 89,
-        attn_backend: str = "TRTLLM",
         base_model: str = "",
-        eagle3_one_model: bool = True,
+        engine_kwargs: dict | None = None,
+        sm_family: int | None = None,
+        sampling_kwargs: dict | None = None,
+        input_config: dict | None = None,
+        chat_kwargs: dict | None = None,
+        require_speculation: bool = False,
+        sm_versions: list[int] | None = None,
     ):
         """
         Initialize the ModelDeployer.
@@ -234,15 +251,91 @@ class ModelDeployer:
             model_id: Path to the model
             tensor_parallel_size: Tensor parallel size for distributed inference
             mini_sm: Minimum SM (Streaming Multiprocessor) requirement for the model
-            attn_backend: is for TRT LLM deployment
+            engine_kwargs: resolved native engine parameters from the case and run YAML.
+                Set model and TP through model_id and tensor_parallel_size only.
+            sm_family: if set, skip unless the GPU belongs to this SM family (100 for SM100 to
+                SM103), for a backend path that checks the family rather than a minimum SM
+            sampling_kwargs: resolved native backend sampling parameters.
+            input_config: optional prompt and local image for a configured request.
+            chat_kwargs: native vLLM chat-call options, separate from sampling parameters.
+            require_speculation: require evidence of actual draft execution during generation.
+            sm_versions: exact CUDA capabilities allowed by the selected backend recipe.
         """
         self.backend = backend
         self.model_id = model_id
         self.tensor_parallel_size = tensor_parallel_size
         self.mini_sm = mini_sm
-        self.attn_backend = attn_backend
         self.base_model = base_model
-        self.eagle3_one_model = eagle3_one_model
+        self.engine_kwargs = dict(engine_kwargs or {})
+        self.sm_family = sm_family
+        self.sampling_kwargs = dict(sampling_kwargs or {})
+        self.input_config = dict(input_config or {})
+        self.chat_kwargs = dict(chat_kwargs or {})
+        self.require_speculation = require_speculation
+        self.sm_versions = sm_versions
+        if (self.input_config or self.chat_kwargs) and backend != "vllm":
+            raise ValueError("Image inputs and chat_kwargs currently require the vLLM adapter")
+        if {"messages", "sampling_params"} & self.chat_kwargs.keys():
+            raise ValueError("Set input_config and sampling_kwargs instead of chat-call inputs")
+        if require_speculation:
+            if not base_model or backend not in ("vllm", "sglang"):
+                raise ValueError("Speculative execution checks require a target and vLLM or SGLang")
+            if backend == "vllm" and self.engine_kwargs.get("disable_log_stats") is not False:
+                raise ValueError("Speculative execution checks require disable_log_stats: false")
+        if backend == "sglang" and self.engine_kwargs.get("enable_layernorm_sp"):
+            if self.engine_kwargs.get("ep_size", tensor_parallel_size) != tensor_parallel_size:
+                raise ValueError("Layernorm sequence parallelism requires EP=TP; override both")
+        reserved_keys = sorted(
+            {"model", "model_path", "tensor_parallel_size", "tp_size"} & self.engine_kwargs.keys()
+        )
+        if reserved_keys:
+            raise ValueError(
+                f"Set model_id and tensor_parallel_size instead of {reserved_keys} in "
+                "engine_kwargs so resource checks and engine arguments stay consistent."
+            )
+
+    def _engine_arguments(self):
+        """Bind runtime model paths and TP without supplying test parameter defaults."""
+        is_draft = bool(self.base_model) or "eagle" in self.model_id.lower()
+        model_key = "model_path" if self.backend == "sglang" else "model"
+        kwargs = {
+            model_key: self.base_model if is_draft else self.model_id,
+            **engine_tp_kwargs(self.backend, self.tensor_parallel_size),
+            **copy.deepcopy(self.engine_kwargs),
+        }
+        if is_draft:
+            # test_eagle may replace the checkpoint ID with its local path after collection.
+            if self.backend == "sglang":
+                if self.require_speculation and kwargs.get("speculative_algorithm") != "DFLASH":
+                    raise ValueError(
+                        "This draft execution check requires speculative_algorithm: DFLASH"
+                    )
+                if "speculative_draft_model_path" in kwargs:
+                    raise ValueError("Set the draft checkpoint through model_id, not engine_kwargs")
+                if not kwargs.get("speculative_algorithm"):
+                    raise ValueError(
+                        "Draft cases require speculative_algorithm to load the drafter"
+                    )
+                kwargs["speculative_draft_model_path"] = self.model_id
+            else:
+                spec_config = kwargs.get("speculative_config")
+                if not isinstance(spec_config, dict):
+                    raise ValueError("Draft cases require speculative_config to load the drafter")
+                if self.require_speculation and spec_config.get("method") != "dflash":
+                    raise ValueError(
+                        "This draft execution check requires speculative_config.method: dflash"
+                    )
+                model_field = "model" if self.backend == "vllm" else "speculative_model_dir"
+                model_fields = (
+                    {"model"}
+                    if self.backend == "vllm"
+                    else {"speculative_model_dir", "speculative_model"}
+                )
+                if model_fields & spec_config.keys():
+                    raise ValueError("Set the draft checkpoint through model_id, not engine_kwargs")
+                spec_config[model_field] = self.model_id
+        print(f"Engine arguments ({self.backend}): {kwargs!r}", flush=True)
+        return kwargs
 
     def run(self):
         """Run the deployment based on the specified backend."""
@@ -255,6 +348,15 @@ class ModelDeployer:
         ):
             pytest.skip(reason=f"Requires sm{self.mini_sm} or higher")
             return
+        if self.sm_family is not None and (
+            torch.cuda.get_device_capability()[0] != self.sm_family // 10
+        ):
+            pytest.skip(reason=f"Requires an sm{self.sm_family // 10}x GPU")
+            return
+        if self.sm_versions is not None:
+            major, minor = torch.cuda.get_device_capability()
+            if major * 10 + minor not in self.sm_versions:
+                pytest.skip(f"Selected backend recipe requires SM in {self.sm_versions}")
 
         if torch.cuda.device_count() < self.tensor_parallel_size:
             pytest.skip(reason=f"Requires at least {self.tensor_parallel_size} GPUs")
@@ -262,6 +364,11 @@ class ModelDeployer:
 
         print(f"Deploying model: {self.model_id} with backend: {self.backend}")
         print(f"Tensor parallel size: {self.tensor_parallel_size}")
+        print(f"Sampling arguments: {self.sampling_kwargs!r}", flush=True)
+        if self.input_config:
+            print(f"Input configuration: {self.input_config!r}", flush=True)
+        if self.chat_kwargs:
+            print(f"Chat arguments: {self.chat_kwargs!r}", flush=True)
         # Use subprocess + capture so pytest capture=tee-sys (and DB plugins) see deploy output.
         if self.backend in ("vllm", "trtllm", "sglang"):
             _run_deploy_via_subprocess(
@@ -269,9 +376,12 @@ class ModelDeployer:
                 model_id=self.model_id,
                 tensor_parallel_size=self.tensor_parallel_size,
                 mini_sm=self.mini_sm,
-                attn_backend=self.attn_backend,
                 base_model=self.base_model,
-                eagle3_one_model=self.eagle3_one_model,
+                engine_kwargs=self.engine_kwargs,
+                sampling_kwargs=self.sampling_kwargs,
+                input_config=self.input_config,
+                chat_kwargs=self.chat_kwargs,
+                require_speculation=self.require_speculation,
             )
         else:
             raise ValueError(f"Unknown backend: {self.backend}")
@@ -281,55 +391,31 @@ class ModelDeployer:
         from tensorrt_llm import LLM, SamplingParams
         from tensorrt_llm.llmapi import CudaGraphConfig, EagleDecodingConfig, KvCacheConfig
 
-        sampling_params = SamplingParams(max_tokens=32)
-        qwen3_models = (
-            "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4",
-            "nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4",
-        )
-        nemotron_models = (
-            "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
-            "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
-        )
-        kv_cache_config = KvCacheConfig(
-            enable_block_reuse=self.model_id not in qwen3_models,
-            free_gpu_memory_fraction=0.8,
-            mamba_ssm_cache_dtype="float32" if self.model_id not in nemotron_models else "auto",
-        )
-        base_kw = {
-            "tensor_parallel_size": self.tensor_parallel_size,
-            "enable_attention_dp": False,
-            "attn_backend": self.attn_backend,
-            "trust_remote_code": True,
-            "max_batch_size": 8,
-        }
-
-        if "eagle" in self.model_id.lower():
-            spec_config = EagleDecodingConfig(
-                max_draft_len=3,
-                speculative_model_dir=self.model_id,
-                eagle3_one_model=self.eagle3_one_model,
+        sampling_params = SamplingParams(**self.sampling_kwargs)
+        llm_kwargs = self._engine_arguments()
+        # Preserve the typed configs used by this suite; YAML supplies their field values.
+        for field, config_type in (
+            ("kv_cache_config", KvCacheConfig),
+            ("cuda_graph_config", CudaGraphConfig),
+        ):
+            if isinstance(llm_kwargs.get(field), dict):
+                llm_kwargs[field] = config_type(**llm_kwargs[field])
+        if "eagle" in self.model_id.lower() and isinstance(
+            llm_kwargs.get("speculative_config"), dict
+        ):
+            llm_kwargs["speculative_config"] = EagleDecodingConfig(
+                **llm_kwargs["speculative_config"]
             )
-            llm = LLM(
-                model=self.base_model,
-                disable_overlap_scheduler=True,
-                enable_autotuner=False,
-                speculative_config=spec_config,
-                cuda_graph_config=CudaGraphConfig(max_batch_size=1),
-                kv_cache_config=kv_cache_config,
-                **base_kw,
-            )
-        else:
-            llm = LLM(
-                model=self.model_id,
-                backend="pytorch",
-                kv_cache_config=kv_cache_config,
-                **base_kw,
-            )
+        llm = LLM(**llm_kwargs)
 
         # Deferred import: transformers is a heavy optional dependency not always present.
         from transformers import AutoTokenizer
 
-        tokenizer_model = self.base_model if "eagle" in self.model_id.lower() else self.model_id
+        tokenizer_model = (
+            self.base_model
+            if self.base_model or "eagle" in self.model_id.lower()
+            else self.model_id
+        )
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_model, trust_remote_code=True)
         prompts = COMMON_PROMPTS
         if tokenizer.chat_template is not None:
@@ -361,39 +447,42 @@ class ModelDeployer:
         """Run vLLM deploy (used by subprocess in run())."""
         from vllm import LLM, SamplingParams
 
-        if "eagle" in self.model_id.lower():
-            llm = LLM(
-                model=self.base_model,
-                speculative_config={
-                    "method": "eagle3",
-                    "model": self.model_id,
-                    "num_speculative_tokens": 3,
-                },
-                tensor_parallel_size=self.tensor_parallel_size,
-                trust_remote_code=True,
-                max_model_len=4096,
-            )
-        else:
-            quantization_method = "modelopt"
-            if "fp4" in self.model_id.lower():
-                quantization_method = "modelopt_fp4"
-            # DeepSeek-V4 FlashMLA requires fp8 kv-cache explicitly
-            kv_cache_dtype = "fp8" if "deepseek-v4" in self.model_id.lower() else "auto"
-            llm = LLM(
-                model=self.model_id,
-                quantization=quantization_method,
-                tensor_parallel_size=self.tensor_parallel_size,
-                trust_remote_code=True,
-                max_model_len=4096,
-                kv_cache_dtype=kv_cache_dtype,
-            )
-        sampling_params = SamplingParams(temperature=0.8, top_p=0.9)
-        conversations = [[{"role": "user", "content": p}] for p in COMMON_PROMPTS]
-        outputs = llm.chat(conversations, sampling_params)
+        llm = LLM(**self._engine_arguments())
+        sampling_params = SamplingParams(**self.sampling_kwargs)
+        prompts = [self.input_config["prompt"]] if self.input_config else COMMON_PROMPTS
+        conversations = [[{"role": "user", "content": p}] for p in prompts]
+        if "image" in self.input_config:
+            # Pillow is needed only for the optional vision-language cases.
+            from PIL import Image
 
-        assert len(outputs) == len(COMMON_PROMPTS), (
-            f"Expected {len(COMMON_PROMPTS)} outputs, got {len(outputs)}"
-        )
+            with Image.open(self.input_config["image"]) as image, io.BytesIO() as buffer:
+                image.convert("RGB").save(buffer, format="PNG")
+                data = base64.b64encode(buffer.getvalue()).decode("ascii")
+            conversations = [
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{data}"},
+                            },
+                            {"type": "text", "text": prompts[0]},
+                        ],
+                    }
+                ]
+            ]
+        before = self._vllm_draft_counts(llm) if self.require_speculation else {}
+        outputs = llm.chat(conversations, sampling_params, **self.chat_kwargs)
+        if self.require_speculation:
+            after = self._vllm_draft_counts(llm)
+            counts = {key: after[key] - before[key] for key in before}
+            print(f"Speculative execution counts (generation delta): {counts!r}", flush=True)
+            assert all(value > 0 for value in counts.values()), (
+                f"Generation did not exercise the draft checkpoint: {counts}"
+            )
+
+        assert len(outputs) == len(prompts), f"Expected {len(prompts)} outputs, got {len(outputs)}"
 
         for i, output in enumerate(outputs):
             assert hasattr(output, "outputs"), f"Output {i} missing 'outputs' attribute"
@@ -404,139 +493,84 @@ class ModelDeployer:
             assert generated_text.strip(), f"Output {i} generated empty text"
 
             print(f"Model: {self.model_id}")
-            print(f"Input prompt: {COMMON_PROMPTS[i]!r}")
+            print(f"Input prompt: {prompts[i]!r}")
             print(f"Rendered prompt: {getattr(output, 'prompt', None)!r}")
             print(f"Generated text: {generated_text!r}")
             print("-" * 50)
         del llm
 
+    @staticmethod
+    def _vllm_draft_counts(llm):
+        names = ("vllm:spec_decode_num_drafts", "vllm:spec_decode_num_draft_tokens")
+        counts = dict.fromkeys(names, 0)
+        for metric in llm.get_metrics():
+            if metric.name in counts:
+                counts[metric.name] += metric.value
+        return counts
+
     def _deploy_sglang_impl(self):
         """Run SGLang deploy (used by subprocess in run())."""
         import sglang as sgl
 
-        quantization_method = "modelopt"
-        if "fp4" in self.model_id.lower():
-            quantization_method = "modelopt_fp4"
-        if "eagle" in self.model_id.lower():
-            eagle_kwargs = {
-                "model_path": self.base_model,
-                "speculative_algorithm": "EAGLE3",
-                "speculative_num_steps": 3,
-                "speculative_eagle_topk": 1,
-                "speculative_num_draft_tokens": 4,
-                "speculative_draft_model_path": self.model_id,
-                "tp_size": self.tensor_parallel_size,
-                "trust_remote_code": True,
-                "mem_fraction_static": 0.7,
-                "context_length": 1024,
-            }
+        if "eagle" in self.model_id.lower() and "nemotron" in self.base_model.lower():
             # Nemotron hybrid (Mamba+attention) requires extra_buffer scheduler
             # strategy and SGLANG_ENABLE_SPEC_V2 for radix cache compatibility
             # with speculative decoding
-            if "nemotron" in self.base_model.lower():
-                eagle_kwargs["mamba_scheduler_strategy"] = "extra_buffer"
-                os.environ["SGLANG_ENABLE_SPEC_V2"] = "1"
-            llm = sgl.Engine(**eagle_kwargs)
-        elif self.model_id in (
-            "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
-            "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
-            "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-FP8",
-            "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4",
-        ):
-            llm = sgl.Engine(
-                model_path=self.model_id,
-                quantization=quantization_method,
-                tp_size=self.tensor_parallel_size,
-                trust_remote_code=True,
-                attention_backend="flashinfer",
-            )
-        else:
-            llm = sgl.Engine(
-                model_path=self.model_id,
-                quantization=quantization_method,
-                tp_size=self.tensor_parallel_size,
-                trust_remote_code=True,
-                context_length=4096,
-            )
-        # Deferred import: transformers is a heavy optional dependency not always present.
-        from transformers import AutoTokenizer
+            os.environ["SGLANG_ENABLE_SPEC_V2"] = "1"
+        llm = sgl.Engine(**self._engine_arguments())
+        try:
+            # Deferred import: transformers is a heavy optional dependency not always present.
+            from transformers import AutoTokenizer
 
-        tokenizer_model = self.base_model if "eagle" in self.model_id.lower() else self.model_id
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_model, trust_remote_code=True)
-        if tokenizer.chat_template is not None:
-            prompts = [
-                tokenizer.apply_chat_template(
-                    [{"role": "user", "content": p}],
-                    tokenize=False,
-                    add_generation_prompt=True,
+            tokenizer_model = (
+                self.base_model
+                if self.base_model or "eagle" in self.model_id.lower()
+                else self.model_id
+            )
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_model, trust_remote_code=True)
+            if tokenizer.chat_template is not None:
+                prompts = [
+                    tokenizer.apply_chat_template(
+                        [{"role": "user", "content": p}],
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                    for p in COMMON_PROMPTS
+                ]
+            else:
+                prompts = COMMON_PROMPTS
+
+            generation_kwargs = (
+                {"sampling_params": self.sampling_kwargs} if self.sampling_kwargs else {}
+            )
+            outputs = llm.generate(prompts, **generation_kwargs)
+            if self.require_speculation:
+                names = ("spec_verify_ct", "spec_num_proposed_drafts")
+                counts = {
+                    name: sum(output.get("meta_info", {}).get(name, 0) for output in outputs)
+                    for name in names
+                }
+                print(f"Speculative execution counts: {counts!r}", flush=True)
+                assert all(value > 0 for value in counts.values()), (
+                    f"Generation did not exercise the draft checkpoint: {counts}"
                 )
-                for p in COMMON_PROMPTS
-            ]
-        else:
-            prompts = COMMON_PROMPTS
-
-        outputs = llm.generate(prompts)
-        assert len(outputs) == len(COMMON_PROMPTS), (
-            f"Expected {len(COMMON_PROMPTS)} outputs, got {len(outputs)}"
-        )
-        for i, output in enumerate(outputs):
-            if isinstance(output, dict):
-                generated_text = output["text"]
-            elif isinstance(output, str):
-                generated_text = output
-            else:
-                raise TypeError(f"Output {i} has unexpected type {type(output)}: {output!r}")
-            assert isinstance(generated_text, str), f"Output {i} text is not a string"
-            assert generated_text.strip(), f"Output {i} generated empty text"
-            print(f"Model: {self.model_id}")
-            print(f"Input prompt: {COMMON_PROMPTS[i]!r}")
-            print(f"Rendered prompt: {prompts[i]!r}")
-            print(f"Generated text: {generated_text!r}")
-            print("-" * 50)
-        llm.shutdown()
+            assert len(outputs) == len(COMMON_PROMPTS), (
+                f"Expected {len(COMMON_PROMPTS)} outputs, got {len(outputs)}"
+            )
+            for i, output in enumerate(outputs):
+                if isinstance(output, dict):
+                    generated_text = output["text"]
+                elif isinstance(output, str):
+                    generated_text = output
+                else:
+                    raise TypeError(f"Output {i} has unexpected type {type(output)}: {output!r}")
+                assert isinstance(generated_text, str), f"Output {i} text is not a string"
+                assert generated_text.strip(), f"Output {i} generated empty text"
+                print(f"Model: {self.model_id}")
+                print(f"Input prompt: {COMMON_PROMPTS[i]!r}")
+                print(f"Rendered prompt: {prompts[i]!r}")
+                print(f"Generated text: {generated_text!r}")
+                print("-" * 50)
+        finally:
+            llm.shutdown()
         del llm
-
-
-class ModelDeployerList:
-    def __init__(self, **params):
-        self.params = {}
-        for key, value in params.items():
-            if isinstance(value, (list, tuple)):
-                self.params[key] = list(value)
-            else:
-                self.params[key] = [value]
-
-        # Filter backends to only include available ones
-        if "backend" in self.params:
-            available = get_available_backends()
-            original_backends = self.params["backend"]
-            self.params["backend"] = [b for b in original_backends if b in available]
-
-        # Pre-generate all deployers for pytest compatibility
-        self._deployers = list(self._generate_deployers())
-
-    def _generate_deployers(self):
-        # If no backends available after filtering, yield nothing
-        if "backend" in self.params and not self.params["backend"]:
-            return
-
-        for values in itertools.product(*self.params.values()):
-            deployer = ModelDeployer(**dict(zip(self.params.keys(), values)))
-            # Set test case ID in format "model_id_backend"
-            deployer.test_id = f"{deployer.model_id}_{deployer.backend}"
-            yield deployer
-
-    def __iter__(self):
-        return iter(self._deployers)
-
-    def __len__(self):
-        return len(self._deployers)
-
-    def __getitem__(self, index):
-        return self._deployers[index]
-
-    def __str__(self):
-        return f"ModelDeployerList({len(self._deployers)} items)"
-
-    def __repr__(self):
-        return f"ModelDeployerList({len(self._deployers)} items)"

@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16#vllm
+# Image: vllm/vllm-openai:v0.32.0; GB200 TP2 recipe, awaiting GPU validation here.
+test_nemotron:
+  - model_id: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+    tensor_parallel_size: 2
+    mini_sm: 100
+    input_config:
+      prompt: Describe this image briefly.
+      image: ../../data/color-grid.png
+    backends:
+      vllm:
+        engine_kwargs:
+          trust_remote_code: true
+          async_scheduling: true
+          enable_mamba_shared_prefix_checkpoint: true
+          limit_mm_per_prompt:
+            image: 1
+            video: 0
+          # Bounded functional workload, not the model's maximum supported context.
+          max_model_len: 8192
+          max_num_seqs: 1
+        sampling_kwargs:
+          temperature: 0
+          max_tokens: 128
+        chat_kwargs:
+          chat_template_kwargs:
+            enable_thinking: false
