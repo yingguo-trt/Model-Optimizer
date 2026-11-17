@@ -132,14 +132,14 @@ The newly added release cases have the following initial deployment recipes:
 | Muse-Spark-Open-816B-A42B-DFlash2 | SGLang | `lmsysorg/sglang:dev-muse-spark-open` | 4 (EP4) |
 | NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 | vLLM | `vllm/vllm-openai:v0.32.0` | 2 |
 | NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 | vLLM | `vllm/vllm-openai:v0.32.0` | 1 |
-| NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr | vLLM | `vllm/vllm-openai:v0.32.0` | 1 |
+| NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr | vLLM | `vllm/vllm-openai:nightly-cf5cea2da37d3dfed27d2e0aa3041c3e553c2d57` | 1 |
 | Step-5-Preview-NVFP4 | vLLM | `vllm/vllm-openai:step-5-preview` | 4 |
 | Qwen-Image-NVFP4 | TRT-LLM VisualGen | `nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc3` | 1 |
 
 Each YAML links its upstream recipe. These configurations await GPU validation
 in this suite; image tags alone are not execution evidence. The LiLiCorr recipe
-targets DGX Spark and uses `sm_versions: [121]` to limit execution to that CUDA
-capability before deployment.
+allows data center Blackwell and DGX Spark candidates with
+`sm_versions: [100, 103, 121]`.
 This does not qualify every device with that capability. Muse's layernorm SP
 recipe needs TP4/EP4 or TP8/EP8 with NVLink/NVSwitch connectivity. The 8192-token
 context and 128-token generation limits are bounded functional workloads, not
