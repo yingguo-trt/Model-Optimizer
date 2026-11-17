@@ -22,6 +22,7 @@ import pytest
 import yaml
 from _test_utils.deploy_config import load_deploy_cases, load_deploy_config, resolve_deploy_config
 from _test_utils.deploy_utils import ModelDeployer, get_available_backends
+from _test_utils.image_deploy_utils import ImageModelDeployer
 
 pytestmark = pytest.mark.release
 
@@ -56,7 +57,10 @@ def pytest_generate_tests(metafunc):
                 if backend not in available:
                     continue
                 params = resolve_deploy_config(case, backend, overrides, tensor_parallel_size=tp)
-                command = ModelDeployer(**params)
+                deployer = (
+                    ImageModelDeployer if case.get("task") == "image-generation" else ModelDeployer
+                )
+                command = deployer(**params)
                 command.test_id = f"{case['model_id']}_{backend}"
                 commands.append(command)
     except (OSError, ValueError, yaml.YAMLError) as exc:
@@ -110,6 +114,11 @@ def test_llama(command):
 
 def test_qwen(command):
     command.run()
+
+
+@pytest.mark.timeout(7200)
+def test_qwen_image_nvfp4(command, tmp_path):
+    command.run(tmp_path)
 
 
 def test_gemma(command):

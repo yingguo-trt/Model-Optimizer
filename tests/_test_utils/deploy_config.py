@@ -17,6 +17,7 @@
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -31,7 +32,7 @@ __all__ = [
 
 BACKENDS = ("vllm", "sglang", "trtllm")
 _PARAMETER_MAPS = {"engine_kwargs", "sampling_kwargs", "chat_kwargs"}
-_BACKEND_FIELDS = _PARAMETER_MAPS | {"mini_sm", "sm_family", "sm_versions"}
+_BACKEND_FIELDS = _PARAMETER_MAPS | {"mini_sm", "sm_family", "sm_versions", "engine_version"}
 _CASE_FIELDS = {
     "model_id",
     "tensor_parallel_size",
@@ -39,6 +40,9 @@ _CASE_FIELDS = {
     "base_model",
     "input_config",
     "require_speculation",
+    "task",
+    "revision",
+    "pipeline_class",
     "backends",
 }
 _RESERVED_ENGINE_FIELDS = {"model", "model_path", "tensor_parallel_size", "tp_size"}
@@ -157,6 +161,19 @@ def _load_case_file(path):
                 _positive_int(case["mini_sm"], f"{model}.mini_sm")
             if "base_model" in case and not isinstance(case["base_model"], str):
                 raise ValueError(f"{model}.base_model must be a string")
+            if "task" in case and case["task"] != "image-generation":
+                raise ValueError(f"{model}: task must be image-generation when specified")
+            if case.get("task") == "image-generation":
+                if not isinstance(case.get("revision"), str) or not re.fullmatch(
+                    r"[0-9a-f]{40}", case["revision"]
+                ):
+                    raise ValueError(f"{model}: image deployment requires a complete HF revision")
+                if not isinstance(case.get("pipeline_class"), str) or not case["pipeline_class"]:
+                    raise ValueError(f"{model}: image deployment requires pipeline_class")
+                if {"base_model", "require_speculation"} & case.keys():
+                    raise ValueError(f"{model}: image deployment does not accept a draft model")
+            elif {"revision", "pipeline_class"} & case.keys():
+                raise ValueError(f"{model}: revision/pipeline_class require task=image-generation")
             if "require_speculation" in case:
                 if type(case["require_speculation"]) is not bool:
                     raise ValueError(f"{model}.require_speculation must be a boolean")
@@ -177,9 +194,30 @@ def _load_case_file(path):
             backends = _mapping(case.get("backends"), f"{model}.backends", set(BACKENDS))
             if not backends:
                 raise ValueError(f"{model}.backends must not be empty")
+            if case.get("task") == "image-generation":
+                if set(backends) != {"trtllm"}:
+                    raise ValueError(f"{model}: image deployment currently requires trtllm")
+                if (
+                    not case.get("input_config", {}).get("prompt")
+                    or "image" in case["input_config"]
+                ):
+                    raise ValueError(f"{model}: image generation requires a text prompt")
             for backend, values in backends.items():
                 _mapping(values, f"{model}.{backend}", _BACKEND_FIELDS)
                 _parameter_maps(values, f"{model}.{backend}")
+                if case.get("task") == "image-generation" and (
+                    not values.get("engine_version") or "sm_family" in values
+                ):
+                    raise ValueError(
+                        f"{model}.{backend}: image deployment requires engine_version; "
+                        "use sm_versions for candidate GPUs"
+                    )
+                if "engine_version" in values and (
+                    case.get("task") != "image-generation"
+                    or not isinstance(values["engine_version"], str)
+                    or not values["engine_version"]
+                ):
+                    raise ValueError(f"{model}.{backend}: engine_version requires an image case")
                 for field in ("mini_sm", "sm_family"):
                     if field in values:
                         _positive_int(values[field], f"{model}.{backend}.{field}")

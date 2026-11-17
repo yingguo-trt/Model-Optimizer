@@ -73,6 +73,9 @@ resolved value (`tensor_parallel_size` for vLLM/TensorRT-LLM, `tp_size` for
 SGLang). The GPU allocation must cover it; GPU memory and model/engine support
 still determine whether deployment succeeds. Model identity and TP cannot be
 overridden inside `engine_kwargs`.
+For image generation, TensorRT-LLM's VisualGen adapter binds the same resolved
+TP to `parallel_config.tp_size` and checks the complete worker count, including
+CFG and Ulysses parallelism, against the allocation.
 
 Each backend accepts its native `engine_kwargs` and `sampling_kwargs`; vLLM also
 accepts `chat_kwargs`. Overrides
@@ -104,6 +107,24 @@ collection time. The adapter embeds the local image in the chat request; it
 does not fetch an image from the network. A prompt without an image selects a
 single text request. Cases without `input_config` retain the existing text batch.
 
+Image-generation checkpoints use `task: image-generation` in the same catalog.
+The [Qwen-Image case](hf_ptq/deploy_cases/qwen/qwen-image-nvfp4.yaml) pins its HF
+`revision`, `pipeline_class` and backend `engine_version`. Its independent
+VisualGen adapter downloads the published pipeline, checks its static NVFP4
+metadata and scales, then generates and decodes an RGB image of the configured
+size. It does not run ModelOpt quantization or export. Engine and sampling
+overrides use the same `--deploy-config` interface as the text cases; select
+image cases separately because VisualGen and LLM parameters differ.
+
+```bash
+pytest tests/examples/hf_ptq/test_deploy.py --run-release \
+  -k Qwen-Image-NVFP4 --deploy-backend trtllm \
+  --basetemp=test_artifacts/deploy_hf/pytest
+```
+
+The image, logs and resolved request are saved in the case's pytest temporary
+directory. The command above keeps them in a directory suitable for archiving.
+
 The newly added release cases have the following initial deployment recipes:
 
 | Checkpoint | Backend | Image | Default TP |
@@ -113,6 +134,7 @@ The newly added release cases have the following initial deployment recipes:
 | NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 | vLLM | `vllm/vllm-openai:v0.32.0` | 1 |
 | NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr | vLLM | `vllm/vllm-openai:v0.32.0` | 1 |
 | Step-5-Preview-NVFP4 | vLLM | `vllm/vllm-openai:step-5-preview` | 4 |
+| Qwen-Image-NVFP4 | TRT-LLM VisualGen | `nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc28` | 1 |
 
 Each YAML links its upstream recipe. These configurations await GPU validation
 in this suite; image tags alone are not execution evidence. The LiLiCorr recipe
@@ -130,7 +152,8 @@ dependencies still apply. Collection alone does not validate model execution.
 
 These integration tests load the checkpoint and generate a batch through the
 backend's Python API, including image input for the new VL cases. They require
-one non-empty text output per prompt;
+one non-empty text output per prompt, or a decodable image of the configured size
+for image-generation cases;
 they do not measure model accuracy or exercise an HTTP serving endpoint.
 GPU qualification requires actual passing cases, with the source revision,
 backend image, checkpoint revision, resolved configuration and pytest results
