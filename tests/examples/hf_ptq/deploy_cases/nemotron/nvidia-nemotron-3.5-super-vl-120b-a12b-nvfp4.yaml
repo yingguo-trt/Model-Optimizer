@@ -45,3 +45,55 @@ test_nemotron:
         chat_kwargs:
           chat_template_kwargs:
             enable_thinking: false
+      sglang:
+        # Model-card SGLang recipe: lmsysorg/sglang:nemotron3-5-super.
+        engine_kwargs:
+          trust_remote_code: true
+          kv_cache_dtype: fp8_e4m3
+          attention_backend: trtllm_mha
+          mamba_backend: flashinfer
+          mamba_ssm_dtype: bfloat16
+          enable_mamba_cache_stochastic_rounding: true
+          mamba_cache_philox_rounds: 5
+          mamba_radix_cache_strategy: extra_buffer
+          context_length: 8192
+          max_running_requests: 1
+        sampling_kwargs:
+          temperature: 0
+          max_new_tokens: 128
+        chat_kwargs:
+          chat_template_kwargs:
+            enable_thinking: false
+      trtllm:
+        # https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4#tensorrt-llm
+        # nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc3; data center Blackwell recipe.
+        sm_versions: [100, 103]
+        engine_kwargs:
+          trust_remote_code: true
+          moe_expert_parallel_size: 1
+          enable_chunked_prefill: true
+          disable_overlap_scheduler: false
+          max_batch_size: 1
+          max_num_tokens: 8192
+          max_seq_len: 8192
+          attn_backend: TRTLLM
+          moe_config:
+            backend: TRTLLM
+          kv_cache_config:
+            dtype: fp8
+            tokens_per_block: 32
+            mamba_ssm_cache_dtype: float16
+            mamba_ssm_stochastic_rounding: false
+            free_gpu_memory_fraction: 0.85
+            enable_block_reuse: true
+            mamba_state_config:
+              enable_branch_snapshot: true
+          cuda_graph_config:
+            enable_padding: true
+            batch_sizes: [1]
+        sampling_kwargs:
+          temperature: 0
+          max_tokens: 128
+        chat_kwargs:
+          chat_template_kwargs:
+            enable_thinking: false

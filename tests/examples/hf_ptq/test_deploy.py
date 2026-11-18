@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import os
-import shutil
 from functools import cache
 from pathlib import Path
 
@@ -74,34 +73,6 @@ def idfn(val):
     if hasattr(val, "test_id"):
         return val.test_id
     return str(val)
-
-
-# clean up hf cache
-HF_CACHE_PATH = os.getenv("HF_HUB_CACHE", os.path.expanduser("~/.cache/huggingface/hub"))
-
-
-def clear_hf_cache():
-    """Clear Hugging Face cache directory."""
-    try:
-        if os.path.exists(HF_CACHE_PATH):
-            print(f"Clearing HF cache at: {HF_CACHE_PATH}")
-            for item in os.listdir(HF_CACHE_PATH):
-                item_path = os.path.join(HF_CACHE_PATH, item)
-                if os.path.isdir(item_path) and "nvidia" in item:
-                    shutil.rmtree(item_path, ignore_errors=True)
-                    print(f"✓ Removed: {item}")
-            print("✓ HF cache cleared successfully")
-        else:
-            print(f"HF cache path does not exist: {HF_CACHE_PATH}")
-    except Exception as e:
-        print(f"⚠ Warning: Failed to clear HF cache: {e}")
-
-
-@pytest.fixture(autouse=True)
-def cleanup_after_test():
-    """Automatically clean up after each test."""
-    yield  # Run the test
-    clear_hf_cache()  # Clean up after test completes
 
 
 def test_deepseek(command):

@@ -28,3 +28,22 @@ test_step5_preview:
         sampling_kwargs:
           temperature: 0
           max_tokens: 128
+      sglang:
+        # https://docs.sglang.io/cookbook/autoregressive/StepFun/Step-5-Preview
+        # lmsysorg/sglang:step-5-preview supplies the required FlashInfer patches.
+        engine_kwargs:
+          trust_remote_code: true
+          moe_runner_backend: flashinfer_trtllm
+          kv_cache_dtype: bfloat16
+          mem_fraction_static: 0.85
+          page_size: 64
+          swa_full_tokens_ratio: 0.03
+          context_length: 8192
+          chunked_prefill_size: 8192
+          max_running_requests: 1
+        sampling_kwargs:
+          temperature: 0
+          max_new_tokens: 128
+        chat_kwargs:
+          chat_template_kwargs:
+            reasoning_effort: low

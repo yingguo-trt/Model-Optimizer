@@ -77,12 +77,13 @@ For image generation, TensorRT-LLM's VisualGen adapter binds the same resolved
 TP to `parallel_config.tp_size` and checks the complete worker count, including
 CFG and Ulysses parallelism, against the allocation.
 
-Each backend accepts its native `engine_kwargs` and `sampling_kwargs`; vLLM also
-accepts `chat_kwargs`. Overrides
+Each backend accepts its native `engine_kwargs` and `sampling_kwargs`.
+`chat_kwargs.chat_template_kwargs` controls prompt rendering for all three engines;
+additional native chat-call options are accepted by vLLM only. Overrides
 apply to every selected case of that backend. Maps merge by parameter name;
 nested parameter values replace the complete value, and explicit YAML `null`
 is preserved. TensorRT-LLM's `kv_cache_config` and `cuda_graph_config` mappings,
-and its EAGLE `speculative_config`, are converted to the corresponding native
+and its EAGLE or DFlash `speculative_config`, are converted to the corresponding native
 configuration objects before initialization.
 
 Model paths and TP are bound at runtime. For paired draft checkpoints, use `base_model` for the
@@ -96,15 +97,17 @@ sequence parallelism, override EP together with TP; their values must match.
 `require_speculation: true` checks actual DFlash execution, in addition to
 nonempty generation. The vLLM adapter requires `disable_log_stats: false` and
 positive per-generation draft counter deltas. SGLang checks the batch's verify
-and proposed-draft counts. Missing or zero counters fail the test; there is no
+and proposed-draft counts. TensorRT-LLM requires `return_perf_metrics: true` and
+positive drafted-token counts from the generation results. Missing or zero counters fail the test; there is no
 acceptance-rate or performance threshold. These cases retain the DFlash method
 when run overrides are applied, so n-gram speculation cannot substitute for the
 published draft checkpoint.
 
-For vLLM image-text requests, set `input_config.prompt` and `input_config.image`
+For image-text requests, set `input_config.prompt` and `input_config.image`
 in the case YAML. Image paths are relative to that YAML file and must exist at
-collection time. The adapter embeds the local image in the chat request; it
-does not fetch an image from the network. A prompt without an image selects a
+collection time. Each adapter passes the local image and the checkpoint's chat
+template to its backend. It does not fetch an image from the network.
+A prompt without an image selects a
 single text request. Cases without `input_config` retain the existing text batch.
 
 Image-generation checkpoints use `task: image-generation` in the same catalog.
@@ -133,18 +136,41 @@ The newly added release cases have the following initial deployment recipes:
 | NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 | vLLM | `vllm/vllm-openai:v0.32.0` | 2 |
 | NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 | vLLM | `vllm/vllm-openai:v0.32.0` | 1 |
 | NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr | vLLM | `vllm/vllm-openai:nightly-cf5cea2da37d3dfed27d2e0aa3041c3e553c2d57` | 1 |
+| NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 | SGLang | `lmsysorg/sglang:nemotron3-5-super` | 2 |
+| NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 | SGLang | `lmsysorg/sglang:nemotron3-5-super` | 1 |
+| NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr | SGLang | `lmsysorg/sglang:nemotron3-5-super` | 1 |
+| NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 | TRT-LLM | `nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc3` | 1 |
+| NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr | TRT-LLM | `nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc3` | 1 |
 | Step-5-Preview-NVFP4 | vLLM | `vllm/vllm-openai:step-5-preview` | 4 |
+| Step-5-Preview-NVFP4 | SGLang | `lmsysorg/sglang:step-5-preview` | 4 |
 | Qwen-Image-NVFP4 | TRT-LLM VisualGen | `nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc3` | 1 |
 
 Each YAML links its upstream recipe. These configurations await GPU validation
-in this suite; image tags alone are not execution evidence. The LiLiCorr recipe
-allows data center Blackwell and DGX Spark candidates with
-`sm_versions: [100, 103, 121]`.
+in this suite; image tags alone are not execution evidence. LiLiCorr's vLLM
+recipe allows data center Blackwell and DGX Spark candidates with
+`sm_versions: [100, 103, 121]`; its TRT-LLM DFlash attention recipe requires
+`sm_versions: [100, 103]`.
 This does not qualify every device with that capability. Muse's layernorm SP
 recipe needs TP4/EP4 or TP8/EP8 with NVLink/NVSwitch connectivity. The 8192-token
 context and 128-token generation limits are bounded functional workloads, not
 model capacity limits. Other engines listed by a model card remain separate
 coverage work until their corresponding cases are implemented and executed.
+
+Group models that use a compatible backend image in one sequential pytest run.
+For example, the three Nemotron SGLang cases share an image and need at most two GPUs:
+
+```bash
+pytest tests/examples/hf_ptq/test_deploy.py --run-release \
+  --deploy-backend sglang -k NVIDIA-Nemotron-3.5-Super-VL-120B-A12B
+```
+
+Leave `--deploy-tp` unset to retain each case's TP. Allocate enough GPUs and host
+memory for the largest case, and do not use pytest-xdist to run these cases
+concurrently on that allocation. Step-5 uses its own image and a separate run.
+Each model runs in a fresh child process; engine shutdown and process-group
+cleanup release its GPU resources before the next model starts. Hugging Face
+disk caches are retained across cases, allowing a target checkpoint to be reused
+by its draft case. The job or workspace owner controls disk-cache cleanup.
 
 The run YAML customizes the checked-in cases; it is not another model catalog.
 Existing GPU/SM skips, checkpoint preparation and shared ModelOpt pytest

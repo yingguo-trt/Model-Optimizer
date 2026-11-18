@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import base64
 import copy
 import io
@@ -21,11 +22,13 @@ import subprocess
 import sys
 import tempfile
 import traceback
+from pathlib import Path
 
 import pytest
 import torch
 
 from .deploy_config import engine_tp_kwargs
+from .examples.run_command import ProcessGroupCleanupError, _run_capturing
 
 # Cache for available backends detection (computed once at import time)
 _AVAILABLE_BACKENDS = None
@@ -194,28 +197,23 @@ if __name__ == '__main__':
             f.write(code)
             tmp_path = f.name
         try:
-            result = subprocess.run(
+            returncode, output = _run_capturing(
                 [*cmd, tmp_path],
-                cwd=tests_dir,
+                cwd=Path(tests_dir),
                 env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+                cleanup_process_group=True,
             )
         finally:
             os.unlink(tmp_path)
     else:
-        result = subprocess.run(
+        returncode, output = _run_capturing(
             cmd,
-            cwd=tests_dir,
+            cwd=Path(tests_dir),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
+            cleanup_process_group=True,
         )
-    if result.stdout:
-        print(result.stdout, end="", flush=True)
-    result.check_returncode()
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, cmd, output=output)
 
 
 # Common test prompts for all backends
@@ -257,7 +255,7 @@ class ModelDeployer:
                 SM103), for a backend path that checks the family rather than a minimum SM
             sampling_kwargs: resolved native backend sampling parameters.
             input_config: optional prompt and local image for a configured request.
-            chat_kwargs: native vLLM chat-call options, separate from sampling parameters.
+            chat_kwargs: chat-template settings, or native chat-call options for vLLM.
             require_speculation: require evidence of actual draft execution during generation.
             sm_versions: exact CUDA capabilities allowed by the selected backend recipe.
         """
@@ -273,15 +271,19 @@ class ModelDeployer:
         self.chat_kwargs = dict(chat_kwargs or {})
         self.require_speculation = require_speculation
         self.sm_versions = sm_versions
-        if (self.input_config or self.chat_kwargs) and backend != "vllm":
-            raise ValueError("Image inputs and chat_kwargs currently require the vLLM adapter")
+        if backend != "vllm" and self.chat_kwargs.keys() - {"chat_template_kwargs"}:
+            raise ValueError("Only vLLM accepts chat-call options beyond chat_template_kwargs")
         if {"messages", "sampling_params"} & self.chat_kwargs.keys():
             raise ValueError("Set input_config and sampling_kwargs instead of chat-call inputs")
         if require_speculation:
-            if not base_model or backend not in ("vllm", "sglang"):
-                raise ValueError("Speculative execution checks require a target and vLLM or SGLang")
+            if not base_model or backend not in ("vllm", "sglang", "trtllm"):
+                raise ValueError(
+                    "Speculative execution checks require a target and supported backend"
+                )
             if backend == "vllm" and self.engine_kwargs.get("disable_log_stats") is not False:
                 raise ValueError("Speculative execution checks require disable_log_stats: false")
+            if backend == "trtllm" and self.sampling_kwargs.get("return_perf_metrics") is not True:
+                raise ValueError("Speculative execution checks require return_perf_metrics: true")
         if backend == "sglang" and self.engine_kwargs.get("enable_layernorm_sp"):
             if self.engine_kwargs.get("ep_size", tensor_parallel_size) != tensor_parallel_size:
                 raise ValueError("Layernorm sequence parallelism requires EP=TP; override both")
@@ -321,11 +323,20 @@ class ModelDeployer:
                 spec_config = kwargs.get("speculative_config")
                 if not isinstance(spec_config, dict):
                     raise ValueError("Draft cases require speculative_config to load the drafter")
-                if self.require_speculation and spec_config.get("method") != "dflash":
+                method_key, method = (
+                    ("method", "dflash") if self.backend == "vllm" else ("decoding_type", "DFlash")
+                )
+                if self.require_speculation and spec_config.get(method_key) != method:
                     raise ValueError(
-                        "This draft execution check requires speculative_config.method: dflash"
+                        f"This draft execution check requires speculative_config.{method_key}: {method}"
                     )
-                model_field = "model" if self.backend == "vllm" else "speculative_model_dir"
+                model_field = (
+                    "model"
+                    if self.backend == "vllm"
+                    else "speculative_model"
+                    if spec_config.get("decoding_type") == "DFlash"
+                    else "speculative_model_dir"
+                )
                 model_fields = (
                     {"model"}
                     if self.backend == "vllm"
@@ -371,18 +382,23 @@ class ModelDeployer:
             print(f"Chat arguments: {self.chat_kwargs!r}", flush=True)
         # Use subprocess + capture so pytest capture=tee-sys (and DB plugins) see deploy output.
         if self.backend in ("vllm", "trtllm", "sglang"):
-            _run_deploy_via_subprocess(
-                backend=self.backend,
-                model_id=self.model_id,
-                tensor_parallel_size=self.tensor_parallel_size,
-                mini_sm=self.mini_sm,
-                base_model=self.base_model,
-                engine_kwargs=self.engine_kwargs,
-                sampling_kwargs=self.sampling_kwargs,
-                input_config=self.input_config,
-                chat_kwargs=self.chat_kwargs,
-                require_speculation=self.require_speculation,
-            )
+            try:
+                _run_deploy_via_subprocess(
+                    backend=self.backend,
+                    model_id=self.model_id,
+                    tensor_parallel_size=self.tensor_parallel_size,
+                    mini_sm=self.mini_sm,
+                    base_model=self.base_model,
+                    engine_kwargs=self.engine_kwargs,
+                    sampling_kwargs=self.sampling_kwargs,
+                    input_config=self.input_config,
+                    chat_kwargs=self.chat_kwargs,
+                    require_speculation=self.require_speculation,
+                )
+            except ProcessGroupCleanupError as exc:
+                pytest.exit(
+                    f"Deployment workers did not exit; stopping GPU reuse: {exc}", returncode=1
+                )
         else:
             raise ValueError(f"Unknown backend: {self.backend}")
 
@@ -406,42 +422,80 @@ class ModelDeployer:
             llm_kwargs["speculative_config"] = EagleDecodingConfig(
                 **llm_kwargs["speculative_config"]
             )
+        elif (
+            isinstance(llm_kwargs.get("speculative_config"), dict)
+            and llm_kwargs["speculative_config"].get("decoding_type") == "DFlash"
+        ):
+            # DFlash is optional in older engine images used by other cases.
+            from tensorrt_llm.llmapi import DFlashDecodingConfig
+
+            llm_kwargs["speculative_config"] = DFlashDecodingConfig(
+                **llm_kwargs["speculative_config"]
+            )
         llm = LLM(**llm_kwargs)
+        try:
+            # Transformers and multimodal helpers are optional deployment dependencies.
+            from transformers import AutoTokenizer
 
-        # Deferred import: transformers is a heavy optional dependency not always present.
-        from transformers import AutoTokenizer
+            tokenizer_model = self.base_model or self.model_id
+            raw_prompts = [self.input_config["prompt"]] if self.input_config else COMMON_PROMPTS
+            template_kwargs = self.chat_kwargs.get("chat_template_kwargs", {})
+            if "image" in self.input_config:
+                from tensorrt_llm.inputs import async_build_multimodal_prompt
+                from transformers import AutoConfig, AutoProcessor
 
-        tokenizer_model = (
-            self.base_model
-            if self.base_model or "eagle" in self.model_id.lower()
-            else self.model_id
-        )
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_model, trust_remote_code=True)
-        prompts = COMMON_PROMPTS
-        if tokenizer.chat_template is not None:
-            prompts = [
-                tokenizer.apply_chat_template(
-                    [{"role": "user", "content": prompt}],
-                    tokenize=False,
-                    add_generation_prompt=True,
+                config = AutoConfig.from_pretrained(tokenizer_model, trust_remote_code=True)
+                processor = AutoProcessor.from_pretrained(tokenizer_model, trust_remote_code=True)
+                prompts = [
+                    asyncio.run(
+                        async_build_multimodal_prompt(
+                            model_type=config.model_type,
+                            tokenizer=llm.tokenizer,
+                            processor=processor,
+                            prompt=raw_prompts[0],
+                            media=[self.input_config["image"]],
+                            chat_template_kwargs=template_kwargs,
+                        )
+                    )
+                ]
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(tokenizer_model, trust_remote_code=True)
+                prompts = (
+                    [
+                        tokenizer.apply_chat_template(
+                            [{"role": "user", "content": prompt}],
+                            tokenize=False,
+                            add_generation_prompt=True,
+                            **template_kwargs,
+                        )
+                        for prompt in raw_prompts
+                    ]
+                    if tokenizer.chat_template is not None
+                    else raw_prompts
                 )
-                for prompt in COMMON_PROMPTS
-            ]
-
-        outputs = llm.generate(prompts, sampling_params)
-        assert len(outputs) == len(COMMON_PROMPTS), (
-            f"Expected {len(COMMON_PROMPTS)} outputs, got {len(outputs)}"
-        )
-        for i, output in enumerate(outputs):
-            generated_text = output.outputs[0].text
-            assert isinstance(generated_text, str), f"Output {i} text is not a string"
-            assert generated_text.strip(), f"Output {i} generated empty text"
-            print(f"Model: {self.model_id}")
-            print(f"Input prompt: {COMMON_PROMPTS[i]!r}")
-            print(f"Rendered prompt: {output.prompt!r}")
-            print(f"Generated text: {generated_text!r}")
-            print("-" * 50)
-        del llm
+            outputs = llm.generate(prompts, sampling_params)
+            assert len(outputs) == len(raw_prompts), (
+                f"Expected {len(raw_prompts)} outputs, got {len(outputs)}"
+            )
+            if self.require_speculation:
+                draft_tokens = 0
+                for output in outputs:
+                    metrics = output.outputs[0].request_perf_metrics
+                    assert metrics is not None, "Missing speculative execution metrics"
+                    draft_tokens += metrics.speculative_decoding.total_draft_tokens
+                print(f"Speculative execution counts: drafted_tokens={draft_tokens}", flush=True)
+                assert draft_tokens > 0, "Generation did not exercise the draft checkpoint"
+            for i, output in enumerate(outputs):
+                generated_text = output.outputs[0].text
+                assert isinstance(generated_text, str), f"Output {i} text is not a string"
+                assert generated_text.strip(), f"Output {i} generated empty text"
+                print(f"Model: {self.model_id}")
+                print(f"Input prompt: {raw_prompts[i]!r}")
+                print(f"Rendered prompt: {output.prompt!r}")
+                print(f"Generated text: {generated_text!r}")
+                print("-" * 50)
+        finally:
+            llm.shutdown()
 
     def _deploy_vllm_impl(self):
         """Run vLLM deploy (used by subprocess in run())."""
@@ -528,21 +582,34 @@ class ModelDeployer:
                 else self.model_id
             )
             tokenizer = AutoTokenizer.from_pretrained(tokenizer_model, trust_remote_code=True)
-            if tokenizer.chat_template is not None:
-                prompts = [
-                    tokenizer.apply_chat_template(
-                        [{"role": "user", "content": p}],
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    )
-                    for p in COMMON_PROMPTS
-                ]
-            else:
-                prompts = COMMON_PROMPTS
-
+            raw_prompts = [self.input_config["prompt"]] if self.input_config else COMMON_PROMPTS
+            conversations = [[{"role": "user", "content": prompt}] for prompt in raw_prompts]
             generation_kwargs = (
                 {"sampling_params": self.sampling_kwargs} if self.sampling_kwargs else {}
             )
+            if "image" in self.input_config:
+                conversations[0][0]["content"] = [
+                    {"type": "image"},
+                    {"type": "text", "text": raw_prompts[0]},
+                ]
+                generation_kwargs["image_data"] = [self.input_config["image"]]
+                if tokenizer.chat_template is None:
+                    raise ValueError(
+                        "Image deployment requires the model's multimodal chat template"
+                    )
+            if tokenizer.chat_template is not None:
+                prompts = [
+                    tokenizer.apply_chat_template(
+                        conversation,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        **self.chat_kwargs.get("chat_template_kwargs", {}),
+                    )
+                    for conversation in conversations
+                ]
+            else:
+                prompts = raw_prompts
+
             outputs = llm.generate(prompts, **generation_kwargs)
             if self.require_speculation:
                 names = ("spec_verify_ct", "spec_num_proposed_drafts")
@@ -554,8 +621,8 @@ class ModelDeployer:
                 assert all(value > 0 for value in counts.values()), (
                     f"Generation did not exercise the draft checkpoint: {counts}"
                 )
-            assert len(outputs) == len(COMMON_PROMPTS), (
-                f"Expected {len(COMMON_PROMPTS)} outputs, got {len(outputs)}"
+            assert len(outputs) == len(raw_prompts), (
+                f"Expected {len(raw_prompts)} outputs, got {len(outputs)}"
             )
             for i, output in enumerate(outputs):
                 if isinstance(output, dict):
@@ -567,7 +634,7 @@ class ModelDeployer:
                 assert isinstance(generated_text, str), f"Output {i} text is not a string"
                 assert generated_text.strip(), f"Output {i} generated empty text"
                 print(f"Model: {self.model_id}")
-                print(f"Input prompt: {COMMON_PROMPTS[i]!r}")
+                print(f"Input prompt: {raw_prompts[i]!r}")
                 print(f"Rendered prompt: {prompts[i]!r}")
                 print(f"Generated text: {generated_text!r}")
                 print("-" * 50)
