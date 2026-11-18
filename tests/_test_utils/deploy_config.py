@@ -195,8 +195,8 @@ def _load_case_file(path):
             if not backends:
                 raise ValueError(f"{model}.backends must not be empty")
             if case.get("task") == "image-generation":
-                if set(backends) != {"trtllm"}:
-                    raise ValueError(f"{model}: image deployment currently requires trtllm")
+                if set(backends) - {"trtllm", "sglang"}:
+                    raise ValueError(f"{model}: image deployment requires trtllm or sglang")
                 if (
                     not case.get("input_config", {}).get("prompt")
                     or "image" in case["input_config"]

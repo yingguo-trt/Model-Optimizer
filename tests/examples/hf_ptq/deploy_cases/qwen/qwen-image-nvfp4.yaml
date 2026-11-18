@@ -40,3 +40,23 @@ test_qwen_image_nvfp4:
           seed: 42
           negative_prompt: ' '
           num_images_per_prompt: 1
+      sglang:
+        # SGLang v0.5.23 registers this published checkpoint in its native diffusion pipeline.
+        engine_version: 0.5.23
+        sm_versions: [100, 103]
+        engine_kwargs:
+          backend: sglang
+          sp_degree: 1
+          enable_cfg_parallel: false
+          enable_torch_compile: false
+          enable_breakable_cuda_graph: false
+          warmup_mode: 'off'
+          log_level: debug
+        sampling_kwargs:
+          height: 512
+          width: 512
+          num_inference_steps: 50
+          guidance_scale: 4.0
+          seed: 42
+          negative_prompt: ' '
+          num_outputs_per_prompt: 1

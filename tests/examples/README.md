@@ -75,7 +75,8 @@ still determine whether deployment succeeds. Model identity and TP cannot be
 overridden inside `engine_kwargs`.
 For image generation, TensorRT-LLM's VisualGen adapter binds the same resolved
 TP to `parallel_config.tp_size` and checks the complete worker count, including
-CFG and Ulysses parallelism, against the allocation.
+CFG and Ulysses parallelism, against the allocation. SGLang Diffusion uses its
+native parallelism configuration with the same resolved TP.
 
 Each backend accepts its native `engine_kwargs` and `sampling_kwargs`.
 `chat_kwargs.chat_template_kwargs` controls prompt rendering for all three engines;
@@ -112,12 +113,12 @@ single text request. Cases without `input_config` retain the existing text batch
 
 Image-generation checkpoints use `task: image-generation` in the same catalog.
 The [Qwen-Image case](hf_ptq/deploy_cases/qwen/qwen-image-nvfp4.yaml) pins its HF
-`revision`, `pipeline_class` and backend `engine_version`. Its independent
-VisualGen adapter downloads the published pipeline, checks its static NVFP4
+`revision`, `pipeline_class` and backend `engine_version`. Its image adapter
+downloads the published pipeline, checks its static NVFP4
 metadata and scales, then generates and decodes an RGB image of the configured
 size. It does not run ModelOpt quantization or export. Engine and sampling
 overrides use the same `--deploy-config` interface as the text cases; select
-image cases separately because VisualGen and LLM parameters differ.
+image cases separately because image-generation and LLM parameters differ.
 
 ```bash
 pytest tests/examples/hf_ptq/test_deploy.py --run-release \
@@ -144,6 +145,7 @@ The newly added release cases have the following initial deployment recipes:
 | Step-5-Preview-NVFP4 | vLLM | `vllm/vllm-openai:step-5-preview` | 4 |
 | Step-5-Preview-NVFP4 | SGLang | `lmsysorg/sglang:step-5-preview` | 4 |
 | Qwen-Image-NVFP4 | TRT-LLM VisualGen | `nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc3` | 1 |
+| Qwen-Image-NVFP4 | SGLang Diffusion | `lmsysorg/sglang:v0.5.23` | 1 |
 
 Each YAML links its upstream recipe. These configurations await GPU validation
 in this suite; image tags alone are not execution evidence. LiLiCorr's vLLM
